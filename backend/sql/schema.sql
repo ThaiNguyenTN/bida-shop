@@ -1,0 +1,256 @@
+IF OBJECT_ID('payment_transactions', 'U') IS NOT NULL DROP TABLE payment_transactions;
+IF OBJECT_ID('cart_items', 'U') IS NOT NULL DROP TABLE cart_items;
+IF OBJECT_ID('carts', 'U') IS NOT NULL DROP TABLE carts;
+IF OBJECT_ID('order_items', 'U') IS NOT NULL DROP TABLE order_items;
+IF OBJECT_ID('orders', 'U') IS NOT NULL DROP TABLE orders;
+IF OBJECT_ID('wishlists', 'U') IS NOT NULL DROP TABLE wishlists;
+IF OBJECT_ID('addresses', 'U') IS NOT NULL DROP TABLE addresses;
+IF OBJECT_ID('product_images', 'U') IS NOT NULL DROP TABLE product_images;
+IF OBJECT_ID('product_services', 'U') IS NOT NULL DROP TABLE product_services;
+IF OBJECT_ID('product_variants', 'U') IS NOT NULL DROP TABLE product_variants;
+IF OBJECT_ID('products', 'U') IS NOT NULL DROP TABLE products;
+IF OBJECT_ID('blog_posts', 'U') IS NOT NULL DROP TABLE blog_posts;
+IF OBJECT_ID('banners', 'U') IS NOT NULL DROP TABLE banners;
+IF OBJECT_ID('settings', 'U') IS NOT NULL DROP TABLE settings;
+IF OBJECT_ID('coupons', 'U') IS NOT NULL DROP TABLE coupons;
+IF OBJECT_ID('categories', 'U') IS NOT NULL DROP TABLE categories;
+IF OBJECT_ID('users', 'U') IS NOT NULL DROP TABLE users;
+GO
+
+CREATE TABLE users (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  email NVARCHAR(255) NOT NULL UNIQUE,
+  password_hash NVARCHAR(255) NOT NULL,
+  full_name NVARCHAR(255) NOT NULL,
+  phone NVARCHAR(50) NULL,
+  role NVARCHAR(30) NOT NULL DEFAULT 'customer',
+  points INT NOT NULL DEFAULT 0,
+  membership_level NVARCHAR(50) NOT NULL DEFAULT 'Standard',
+  email_verified BIT NOT NULL DEFAULT 0,
+  verification_token NVARCHAR(255) NULL,
+  is_active BIT NOT NULL DEFAULT 1,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE categories (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  name NVARCHAR(255) NOT NULL,
+  slug NVARCHAR(255) NOT NULL UNIQUE,
+  parent_id INT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE products (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  slug NVARCHAR(255) NOT NULL UNIQUE,
+  sku NVARCHAR(100) NOT NULL UNIQUE,
+  name NVARCHAR(255) NOT NULL,
+  brand NVARCHAR(100) NOT NULL,
+  type NVARCHAR(100) NOT NULL,
+  category_id INT NULL,
+  description NVARCHAR(MAX) NULL,
+  long_description NVARCHAR(MAX) NULL,
+  price DECIMAL(18,2) NOT NULL,
+  sale_price DECIMAL(18,2) NULL,
+  cost DECIMAL(18,2) NULL,
+  tip_size NVARCHAR(50) NULL,
+  shaft_material NVARCHAR(100) NULL,
+  joint_type NVARCHAR(100) NULL,
+  wrap_type NVARCHAR(100) NULL,
+  butt_material NVARCHAR(100) NULL,
+  stock_total INT NOT NULL DEFAULT 0,
+  rating DECIMAL(4,2) NOT NULL DEFAULT 0,
+  review_count INT NOT NULL DEFAULT 0,
+  sold_count INT NOT NULL DEFAULT 0,
+  is_featured BIT NOT NULL DEFAULT 0,
+  is_active BIT NOT NULL DEFAULT 1,
+  metadata NVARCHAR(MAX) NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE product_variants (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  product_id INT NOT NULL,
+  code NVARCHAR(100) NOT NULL,
+  weight NVARCHAR(50) NULL,
+  tip_size NVARCHAR(50) NULL,
+  stock INT NOT NULL DEFAULT 0,
+  price_delta DECIMAL(18,2) NOT NULL DEFAULT 0,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE product_services (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  product_id INT NOT NULL,
+  code NVARCHAR(100) NOT NULL,
+  name NVARCHAR(255) NOT NULL,
+  price DECIMAL(18,2) NOT NULL DEFAULT 0,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE product_images (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  product_id INT NOT NULL,
+  image_url NVARCHAR(1000) NOT NULL,
+  alt_text NVARCHAR(255) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE coupons (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  code NVARCHAR(100) NOT NULL UNIQUE,
+  discount_type NVARCHAR(20) NOT NULL,
+  value DECIMAL(18,2) NOT NULL,
+  min_order_amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+  usage_limit INT NULL,
+  used_count INT NOT NULL DEFAULT 0,
+  active BIT NOT NULL DEFAULT 1,
+  starts_at DATETIME2 NULL,
+  ends_at DATETIME2 NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE settings (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  setting_key NVARCHAR(100) NOT NULL UNIQUE,
+  setting_value NVARCHAR(MAX) NULL,
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE banners (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  title NVARCHAR(255) NOT NULL,
+  subtitle NVARCHAR(500) NULL,
+  image_url NVARCHAR(1000) NOT NULL,
+  href NVARCHAR(1000) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  active BIT NOT NULL DEFAULT 1,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE blog_posts (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  slug NVARCHAR(255) NOT NULL UNIQUE,
+  title NVARCHAR(255) NOT NULL,
+  excerpt NVARCHAR(1000) NULL,
+  content NVARCHAR(MAX) NULL,
+  cover_image NVARCHAR(1000) NULL,
+  active BIT NOT NULL DEFAULT 1,
+  published_at DATETIME2 NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE addresses (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  user_id INT NOT NULL,
+  label NVARCHAR(100) NULL,
+  recipient_name NVARCHAR(255) NULL,
+  phone NVARCHAR(50) NULL,
+  line1 NVARCHAR(500) NOT NULL,
+  ward NVARCHAR(255) NULL,
+  district NVARCHAR(255) NULL,
+  city NVARCHAR(255) NULL,
+  is_default BIT NOT NULL DEFAULT 0,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE wishlists (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  user_id INT NOT NULL,
+  product_id INT NOT NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE carts (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  user_id INT NULL,
+  guest_token NVARCHAR(100) NULL,
+  status NVARCHAR(30) NOT NULL DEFAULT 'active',
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE cart_items (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  cart_id INT NOT NULL,
+  product_id INT NOT NULL,
+  variant_id INT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  selected_services NVARCHAR(MAX) NULL,
+  unit_price DECIMAL(18,2) NOT NULL DEFAULT 0,
+  is_selected BIT NOT NULL DEFAULT 1,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE orders (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  order_code NVARCHAR(100) NOT NULL UNIQUE,
+  user_id INT NULL,
+  customer_name NVARCHAR(255) NOT NULL,
+  email NVARCHAR(255) NOT NULL,
+  phone NVARCHAR(50) NOT NULL,
+  payment_method NVARCHAR(30) NOT NULL,
+  payment_status NVARCHAR(30) NOT NULL DEFAULT 'pending',
+  order_status NVARCHAR(30) NOT NULL DEFAULT 'new',
+  subtotal DECIMAL(18,2) NOT NULL,
+  discount_total DECIMAL(18,2) NOT NULL DEFAULT 0,
+  shipping_total DECIMAL(18,2) NOT NULL DEFAULT 0,
+  grand_total DECIMAL(18,2) NOT NULL,
+  shipping_address NVARCHAR(MAX) NULL,
+  note NVARCHAR(1000) NULL,
+  coupon_code NVARCHAR(100) NULL,
+  guest_checkout BIT NOT NULL DEFAULT 1,
+  shipping_provider NVARCHAR(100) NULL,
+  tracking_code NVARCHAR(100) NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE order_items (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  order_id INT NOT NULL,
+  product_id INT NOT NULL,
+  variant_id INT NULL,
+  product_name NVARCHAR(255) NOT NULL,
+  sku NVARCHAR(100) NOT NULL,
+  quantity INT NOT NULL,
+  unit_price DECIMAL(18,2) NOT NULL,
+  line_total DECIMAL(18,2) NOT NULL,
+  selected_services NVARCHAR(MAX) NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO
+
+CREATE TABLE payment_transactions (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  order_id INT NOT NULL,
+  provider NVARCHAR(30) NOT NULL,
+  request_id NVARCHAR(100) NULL,
+  provider_ref NVARCHAR(100) NULL,
+  amount DECIMAL(18,2) NOT NULL,
+  status NVARCHAR(30) NOT NULL,
+  raw_payload NVARCHAR(MAX) NULL,
+  created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  updated_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+GO

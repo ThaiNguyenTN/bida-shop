@@ -1,0 +1,26 @@
+import { fail } from '../lib/http.js';
+import { verifyToken } from '../lib/auth.js';
+import { query } from '../lib/db.js';
+
+export async function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return fail(res, 'Unauthorized', 401);
+  try {
+    const payload = verifyToken(token);
+    const result = await query('SELECT id, email, full_name, phone, role, points, membership_level, customer_tag FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
+    if (!result.rows[0]) return fail(res, 'User not found', 401);
+    req.user = result.rows[0];
+    next();
+  } catch (error) {
+    return fail(res, 'Invalid token', 401, error.message);
+  }
+}
+
+export function requireRoles(...roles) {
+  return (req, res, next) => {
+    if (!req.user) return fail(res, 'Unauthorized', 401);
+    if (!roles.includes(req.user.role)) return fail(res, 'Forbidden', 403);
+    next();
+  };
+}
