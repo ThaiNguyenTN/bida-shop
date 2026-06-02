@@ -13,6 +13,20 @@ function extractIp(req) {
   return (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1').toString().split(',')[0].trim();
 }
 
+function backendBaseUrl(req) {
+  if (process.env.BACKEND_PUBLIC_URL) return process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '');
+  const protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'http').toString().split(',')[0];
+  return `${protocol}://${req.get('host')}`;
+}
+
+function vnpayReturnUrl(req) {
+  return process.env.VNPAY_RETURN_URL || `${backendBaseUrl(req)}/api/orders/payments/vnpay/return`;
+}
+
+function frontendBaseUrl() {
+  return (process.env.FRONTEND_URL || 'http://localhost:8080').replace(/\/+$/, '');
+}
+
 function serviceTotal(codes, services) {
   return (codes || []).reduce((sum, code) => sum + Number(services.find((s) => s.code === code)?.price || 0), 0);
 }
@@ -314,7 +328,8 @@ async function createOrderRecord({ tx, user, payload, ipAddr }) {
       orderCode: order.order_code,
       amount: order.grand_total,
       ipAddr,
-      orderInfo: `Thanh toan don hang ${order.order_code}`
+      orderInfo: `Thanh toan don hang ${order.order_code}`,
+      returnUrl: payload.vnpayReturnUrl
     });
     await logPaymentTransaction({
       tx,
@@ -345,6 +360,8 @@ async function recordVnpayReturn(req) {
   const order = (await query('SELECT id, order_code, grand_total, payment_status FROM orders WHERE order_code = $1', [req.query.vnp_TxnRef])).rows[0];
   if (order) {
     await withTransaction(async (tx) => {
+      const amount = Number(req.query.vnp_Amount || 0) / 100;
+      const success = valid && isSuccessfulVnpayResponse(req.query) && Math.round(amount) === Math.round(Number(order.grand_total || 0));
       await logPaymentTransaction({
         tx,
         orderId: order.id,
@@ -352,13 +369,24 @@ async function recordVnpayReturn(req) {
         providerRef: req.query.vnp_TransactionNo || null,
         txnRef: req.query.vnp_TxnRef || null,
         eventType: 'return',
-        amount: Number(req.query.vnp_Amount || 0) / 100,
-        status: valid && isSuccessfulVnpayResponse(req.query) ? 'gateway_success' : 'gateway_failed',
+        amount,
+        status: success ? 'paid' : 'gateway_failed',
         checksumValid: valid ? 1 : 0,
         responseCode: req.query.vnp_ResponseCode || null,
         transactionStatus: req.query.vnp_TransactionStatus || null,
         rawPayload: req.query
       });
+      if (success && order.payment_status !== 'paid') {
+        await query(`UPDATE orders
+          SET payment_status = 'paid',
+              payment_provider = 'vnpay',
+              payment_ref = $2,
+              paid_at = COALESCE(paid_at, SYSUTCDATETIME()),
+              payment_failure_reason = NULL,
+              updated_at = SYSUTCDATETIME()
+          WHERE id = $1`, [order.id, req.query.vnp_TransactionNo || req.query.vnp_BankTranNo || null], tx);
+        await awardPointsIfEligible(order.id, tx);
+      }
     });
   }
   return { valid, order };
@@ -508,7 +536,7 @@ ordersRouter.get('/payments/vnpay/return', async (req, res) => {
   const result = await recordVnpayReturn(req);
   const paymentState = result.valid && isSuccessfulVnpayResponse(req.query) ? 'success' : 'failed';
   const code = req.query.vnp_TxnRef || '';
-  return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:8080'}/info.html?payment=${paymentState}&order=${code}`);
+  return res.redirect(`${frontendBaseUrl()}/info.html?payment=${paymentState}&order=${encodeURIComponent(code)}`);
 });
 
 ordersRouter.get('/payments/vnpay/ipn', async (req, res) => {
@@ -524,7 +552,7 @@ ordersRouter.post('/payments/momo/ipn', async (req, res) => {
 ordersRouter.post('/checkout', async (req, res) => {
   try {
     const user = await requireCheckoutUser(req);
-    const result = await withTransaction((tx) => createOrderRecord({ tx, user, payload: req.body || {}, ipAddr: extractIp(req) }));
+    const result = await withTransaction((tx) => createOrderRecord({ tx, user, payload: { ...(req.body || {}), vnpayReturnUrl: vnpayReturnUrl(req) }, ipAddr: extractIp(req) }));
     return ok(res, {
       order: result.order,
       paymentMethod: result.order.payment_method,
@@ -552,7 +580,8 @@ ordersRouter.post('/:orderCode/payments/vnpay/retry', async (req, res) => {
         orderCode: order.order_code,
         amount: order.grand_total,
         ipAddr: extractIp(req),
-        orderInfo: `Thanh toan lai don hang ${order.order_code}`
+        orderInfo: `Thanh toan lai don hang ${order.order_code}`,
+        returnUrl: vnpayReturnUrl(req)
       });
       await query(`UPDATE orders
         SET payment_status = 'pending',

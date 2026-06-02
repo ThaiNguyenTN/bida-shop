@@ -20,6 +20,18 @@ import {
 
 export const mongoOrdersRouter = Router();
 
+function backendBaseUrl(req) {
+  if (process.env.BACKEND_PUBLIC_URL) return process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '');
+  const protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'http').toString().split(',')[0];
+  return `${protocol}://${req.get('host')}`;
+}
+function frontendBaseUrl() {
+  return (process.env.FRONTEND_URL || env.frontendUrl || 'http://localhost:8080').replace(/\/+$/, '');
+}
+function vnpayReturnUrl(req) {
+  return process.env.VNPAY_RETURN_URL || `${backendBaseUrl(req)}/api/orders/payments/vnpay/return`;
+}
+
 function normalizePhone(value) {
   return String(value || '').replace(/\D/g, '');
 }
@@ -185,7 +197,7 @@ mongoOrdersRouter.get('/payments/vnpay/return', async (req, res) => {
   const result = await finalizeVnpay(req.query, 'return');
   const paymentState = result.valid && isSuccessfulVnpayResponse(req.query) ? 'success' : 'failed';
   const code = req.query.vnp_TxnRef || '';
-  return res.redirect(`${env.frontendUrl}/info.html?payment=${paymentState}&order=${encodeURIComponent(code)}`);
+  return res.redirect(`${frontendBaseUrl()}/info.html?payment=${paymentState}&order=${encodeURIComponent(code)}`);
 });
 
 mongoOrdersRouter.get('/payments/vnpay/ipn', async (req, res) => {
@@ -249,7 +261,7 @@ mongoOrdersRouter.post('/checkout', requireAuth, async (req, res) => {
     await ensureAddress(req.user.id, req.body.customer);
     const result = { order };
     if (order.payment_method === 'vnpay') {
-      result.paymentUrl = createPaymentUrl({ orderCode: order.order_code, amount: order.grand_total, ipAddr: req.ip, orderInfo: `Thanh toan ${order.order_code}` });
+      result.paymentUrl = createPaymentUrl({ orderCode: order.order_code, amount: order.grand_total, ipAddr: req.ip, orderInfo: `Thanh toan ${order.order_code}`, returnUrl: vnpayReturnUrl(req) });
     }
     return ok(res, result, 201);
   } catch (error) {

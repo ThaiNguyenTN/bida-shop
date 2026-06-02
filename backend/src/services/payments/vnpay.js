@@ -30,8 +30,8 @@ function sortAndEncode(payload) {
   return { query: query.toString(), hashData, sorted };
 }
 
-export function createPaymentUrl({ orderCode, amount, ipAddr = '127.0.0.1', orderInfo = 'Thanh toan don hang', bankCode = '' }) {
-  if (!env.vnpay.tmnCode || !env.vnpay.hashSecret || !env.vnpay.returnUrl) {
+export function createPaymentUrl({ orderCode, amount, ipAddr = '127.0.0.1', orderInfo = 'Thanh toan don hang', bankCode = '', returnUrl = env.vnpay.returnUrl }) {
+  if (!env.vnpay.tmnCode || !env.vnpay.hashSecret || !returnUrl) {
     throw new Error('VNPay environment variables are not configured');
   }
 
@@ -47,7 +47,7 @@ export function createPaymentUrl({ orderCode, amount, ipAddr = '127.0.0.1', orde
     vnp_OrderInfo: orderInfo,
     vnp_OrderType: 'other',
     vnp_Locale: 'vn',
-    vnp_ReturnUrl: env.vnpay.returnUrl,
+    vnp_ReturnUrl: returnUrl,
     vnp_IpAddr: ipAddr,
     vnp_CreateDate: createDate,
     vnp_BankCode: bankCode || undefined
