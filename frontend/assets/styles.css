@@ -2160,16 +2160,17 @@ hr.sep {
 }
 
 .hero-overlay.hero-bottom h1 {
-  margin: 14px 0 10px;
+  margin: 0 0 10px;
   font-size: 64px;
   line-height: 1.02;
   color: #fff;
 }
 
-.hero-overlay.hero-bottom p {
-  margin: 0 0 18px;
+.hero-subtitle {
+  margin: 0;
   font-size: 20px;
-  color: rgba(255,255,255,0.92);
+  line-height: 1.35;
+  color: #fff;
   max-width: 900px;
 }
 
@@ -2231,7 +2232,7 @@ hr.sep {
     font-size: 38px;
   }
 
-  .hero-overlay.hero-bottom p {
+  .hero-subtitle {
     font-size: 16px;
   }
 }

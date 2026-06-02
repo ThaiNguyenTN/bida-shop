@@ -1179,8 +1179,8 @@ function bindRegisterLiveValidation(form) {
                   alt="${banner.title}"
                 />
                 <div class="hero-overlay hero-bottom">
-                  <span class="badge">${banner.subtitle || ''}</span>
                   <h1>${banner.title || ''}</h1>
+                  ${banner.subtitle ? `<div class="hero-subtitle">${banner.subtitle}</div>` : ''}
                 </div>
               </a>
             `).join('')}
