@@ -497,8 +497,28 @@
     if ($('#newPostBtn')) $('#newPostBtn').onclick = () => { state.editingPost = null; renderContent(); };
     if ($('#resetBannerForm')) $('#resetBannerForm').onclick = () => { state.editingBanner = null; renderContent(); };
     if ($('#resetPostForm')) $('#resetPostForm').onclick = () => { state.editingPost = null; renderContent(); };
-    if ($('#uploadBannerBtn')) $('#uploadBannerBtn').onclick = async () => { try { const result = await store.uploadBannerImages($('#bannerImageFiles').files); setBannerPreview(result.files?.[0]?.url || ''); notify('Đã tải banner.'); } catch (error) { notify(error.message, 'danger'); } };
-    if ($('#uploadPostBtn')) $('#uploadPostBtn').onclick = async () => { try { const result = await store.uploadBlogImages($('#postImageFiles').files); setPostPreview(result.files?.[0]?.url || ''); notify('Đã tải ảnh blog.'); } catch (error) { notify(error.message, 'danger'); } };
+    if ($('#uploadBannerBtn')) $('#uploadBannerBtn').onclick = async () => {
+      const files = $('#bannerImageFiles')?.files;
+      if (!files?.length) return notify('Hãy chọn ít nhất một ảnh.', 'warning');
+      try {
+        const result = await store.uploadBannerImages(files);
+        const url = result.files?.[0]?.url || '';
+        if (!url) return notify('Không nhận được đường dẫn ảnh sau khi tải lên.', 'danger');
+        setBannerPreview(url);
+        notify('Đã tải banner.');
+      } catch (error) { notify(error.message, 'danger'); }
+    };
+    if ($('#uploadPostBtn')) $('#uploadPostBtn').onclick = async () => {
+      const files = $('#postImageFiles')?.files;
+      if (!files?.length) return notify('Hãy chọn ít nhất một ảnh.', 'warning');
+      try {
+        const result = await store.uploadBlogImages(files);
+        const url = result.files?.[0]?.url || '';
+        if (!url) return notify('Không nhận được đường dẫn ảnh sau khi tải lên.', 'danger');
+        setPostPreview(url);
+        notify('Đã tải ảnh blog.');
+      } catch (error) { notify(error.message, 'danger'); }
+    };
     $all('.edit-banner').forEach((btn) => btn.onclick = () => { state.editingBanner = state.banners.find((x) => x.id === Number(btn.dataset.id)) || null; state.contentSubTab = 'bannerForm'; renderContent(); });
     $all('.edit-post').forEach((btn) => btn.onclick = () => { state.editingPost = state.posts.find((x) => x.id === Number(btn.dataset.id)) || null; state.contentSubTab = 'postForm'; renderContent(); });
     if ($('#bannerForm')) $('#bannerForm').onsubmit = async (e) => { e.preventDefault(); const fd = new FormData(e.target); const id = fd.get('id'); const payload = { title: fd.get('title'), subtitle: fd.get('subtitle'), href: fd.get('href'), imageUrl: fd.get('imageUrl'), sortOrder: Number(fd.get('sortOrder') || 0), active: fd.get('active') === '1' }; try { await store.request(id ? `/admin/content/banners/${id}` : '/admin/content/banners', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) }); await loadAdminData(); state.editingBanner = null; state.contentSubTab = 'banners'; renderContent(); notify('Đã lưu banner.'); } catch (error) { notify(error.message, 'danger'); } };

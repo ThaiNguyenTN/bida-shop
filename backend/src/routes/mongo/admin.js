@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import multer from 'multer';
 import { Router } from 'express';
-import { ok, fail } from '../../lib/http.js';
+import { ok, fail, slugify } from '../../lib/http.js';
 import { connectMongo } from '../../lib/mongo.js';
 import { requireAuth, requireRoles } from '../../middleware/auth.js';
 import {
@@ -22,6 +26,41 @@ import {
 } from '../../models/mongo.js';
 
 export const mongoAdminRouter = Router();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const uploadsRoot = path.join(__dirname, '..', '..', '..', 'uploads');
+const productUploadDir = path.join(uploadsRoot, 'products');
+const bannerUploadDir = path.join(uploadsRoot, 'banners');
+const blogUploadDir = path.join(uploadsRoot, 'blogs');
+const notificationUploadDir = path.join(uploadsRoot, 'notifications');
+
+[productUploadDir, bannerUploadDir, blogUploadDir, notificationUploadDir].forEach((dir) => {
+  fs.mkdirSync(dir, { recursive: true });
+});
+
+function makeUpload(destination) {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, destination),
+      filename: (_req, file, cb) => {
+        const ext = (path.extname(file.originalname || '') || '.jpg').toLowerCase();
+        const base = slugify(path.basename(file.originalname || 'image', ext)) || 'image';
+        const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        cb(null, `${base}-${unique}${ext}`);
+      }
+    }),
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype && file.mimetype.startsWith('image/')) cb(null, true);
+      else cb(new Error('Chỉ cho phép tải lên file ảnh'));
+    },
+    limits: { fileSize: 8 * 1024 * 1024, files: 10 }
+  });
+}
+
+const productUpload = makeUpload(productUploadDir);
+const bannerUpload = makeUpload(bannerUploadDir);
+const blogUpload = makeUpload(blogUploadDir);
+const notificationUpload = makeUpload(notificationUploadDir);
 
 mongoAdminRouter.use(async (_req, _res, next) => {
   await connectMongo();
@@ -52,6 +91,14 @@ function withoutMongoId(row) {
   const next = { ...row };
   delete next._id;
   return next;
+}
+
+function uploadedFiles(files, folder) {
+  return (Array.isArray(files) ? files : []).map((file) => ({
+    url: `/uploads/${folder}/${file.filename}`,
+    originalName: file.originalname,
+    size: file.size
+  }));
 }
 
 function normalizeProduct(row, extras = {}) {
@@ -121,6 +168,22 @@ mongoAdminRouter.get('/dashboard', async (req, res) => {
     alerts: lowStock.map((product) => ({ name: product.name, stock_total: product.stock_total })),
     dailyRevenue: [...dailyMap.values()].sort((a, b) => a.order_date.localeCompare(b.order_date))
   });
+});
+
+mongoAdminRouter.post('/uploads/product-images', requireRoles('admin', 'manager', 'warehouse'), productUpload.array('images', 10), async (req, res) => {
+  return ok(res, { files: uploadedFiles(req.files, 'products') }, 201);
+});
+
+mongoAdminRouter.post('/uploads/banner-images', requireRoles('admin', 'manager'), bannerUpload.array('images', 10), async (req, res) => {
+  return ok(res, { files: uploadedFiles(req.files, 'banners') }, 201);
+});
+
+mongoAdminRouter.post('/uploads/blog-images', requireRoles('admin', 'manager'), blogUpload.array('images', 10), async (req, res) => {
+  return ok(res, { files: uploadedFiles(req.files, 'blogs') }, 201);
+});
+
+mongoAdminRouter.post('/uploads/notification-images', requireRoles('admin', 'manager', 'cskh'), notificationUpload.array('images', 10), async (req, res) => {
+  return ok(res, { files: uploadedFiles(req.files, 'notifications') }, 201);
 });
 
 mongoAdminRouter.get('/products', async (_req, res) => {
