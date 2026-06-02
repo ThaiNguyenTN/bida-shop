@@ -1181,10 +1181,6 @@ function bindRegisterLiveValidation(form) {
                 <div class="hero-overlay hero-bottom">
                   <span class="badge">${banner.subtitle || ''}</span>
                   <h1>${banner.title || ''}</h1>
-                  <div class="inline-actions">
-                    <span class="btn btn-primary">Mua ngay</span>
-                    <span class="btn">Xem thêm</span>
-                  </div>
                 </div>
               </a>
             `).join('')}
