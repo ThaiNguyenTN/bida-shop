@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { fail, ok } from '../../lib/http.js';
+import { verifyToken } from '../../lib/auth.js';
 import { connectMongo } from '../../lib/mongo.js';
-import { Cart, CartItem, Product, ProductImage, ProductService, ProductVariant, nextId } from '../../models/mongo.js';
+import { Cart, CartItem, Product, ProductImage, ProductService, ProductVariant, User, nextId } from '../../models/mongo.js';
 
 export const mongoCartRouter = Router();
 
@@ -21,6 +22,14 @@ async function currentCart(req, session = null) {
   if (!cart) {
     cart = await Cart.create([{ id: await nextId('carts', session), user_id: userId, guest_token: userId ? null : token, status: 'active' }], { session });
     cart = cart[0];
+  }
+  if (userId && token) {
+    const guest = await Cart.findOne({ guest_token: token, status: 'active' }).session(session);
+    if (guest && guest.id !== cart.id) {
+      await CartItem.updateMany({ cart_id: guest.id }, { $set: { cart_id: cart.id } }).session(session);
+      guest.status = 'merged';
+      await guest.save({ session });
+    }
   }
   return { cart, guestToken: userId ? '' : token };
 }
@@ -88,6 +97,19 @@ async function serializeCart(cart, guestToken = '') {
 mongoCartRouter.use(async (_req, _res, next) => {
   await connectMongo();
   next();
+});
+
+mongoCartRouter.use(async (req, _res, next) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return next();
+  try {
+    const payload = verifyToken(token);
+    req.user = await User.findOne({ id: Number(payload.sub), is_active: 1 }).lean();
+  } catch {
+    req.user = null;
+  }
+  return next();
 });
 
 mongoCartRouter.get('/', async (req, res) => {
