@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { fail, ok, orderCode } from '../../lib/http.js';
+import { env } from '../../lib/env.js';
 import { connectMongo } from '../../lib/mongo.js';
 import { requireAuth } from '../../middleware/auth.js';
-import { createPaymentUrl } from '../../services/payments/vnpay.js';
+import { createPaymentUrl, verifyVnpayPayload } from '../../services/payments/vnpay.js';
 import {
   Address,
   Cart,
@@ -10,6 +11,7 @@ import {
   Coupon,
   Order,
   OrderItem,
+  PaymentTransaction,
   Product,
   ProductService,
   ProductVariant,
@@ -38,6 +40,9 @@ async function getActiveCart(userId) {
 }
 function requiresVerifiedEmail(user) {
   return String(user?.role || '').toLowerCase() === 'customer' && !Number(user?.email_verified);
+}
+function isSuccessfulVnpayResponse(params) {
+  return params.vnp_ResponseCode === '00' && params.vnp_TransactionStatus === '00';
 }
 async function evaluateCoupon(code, subtotal) {
   const normalized = String(code || '').trim().toUpperCase();
@@ -105,10 +110,87 @@ async function buildCheckoutLines(cartId) {
     };
   });
 }
+async function logPaymentTransaction({ orderId, providerRef = '', amount = 0, status, rawPayload = {} }) {
+  if (!orderId) return;
+  await PaymentTransaction.create({
+    id: await nextId('payment_transactions'),
+    order_id: orderId,
+    provider: 'vnpay',
+    provider_ref: String(providerRef || ''),
+    amount: Number(amount || 0),
+    status,
+    raw_payload: rawPayload
+  });
+}
+async function finalizeVnpay(params, eventType = 'return') {
+  const valid = verifyVnpayPayload(params);
+  const order = await Order.findOne({ order_code: params.vnp_TxnRef }).lean();
+  if (!order) return { code: '01', message: 'Order not found', valid, order: null };
+
+  const amount = Number(params.vnp_Amount || 0) / 100;
+  if (valid && Math.round(amount) !== Math.round(Number(order.grand_total || 0))) {
+    await logPaymentTransaction({ orderId: order.id, providerRef: params.vnp_TransactionNo, amount, status: 'invalid_amount', rawPayload: { ...params, eventType } });
+    return { code: '04', message: 'Invalid Amount', valid, order };
+  }
+
+  if (!valid) {
+    await logPaymentTransaction({ orderId: order.id, providerRef: params.vnp_TransactionNo, amount, status: 'invalid_signature', rawPayload: { ...params, eventType } });
+    return { code: '97', message: 'Invalid Signature', valid, order };
+  }
+
+  const success = isSuccessfulVnpayResponse(params);
+  await logPaymentTransaction({
+    orderId: order.id,
+    providerRef: params.vnp_TransactionNo || params.vnp_BankTranNo,
+    amount,
+    status: success ? 'paid' : 'failed',
+    rawPayload: { ...params, eventType }
+  });
+
+  if (success) {
+    await Order.updateOne(
+      { id: order.id, payment_status: { $ne: 'paid' } },
+      {
+        $set: {
+          payment_status: 'paid',
+          payment_provider: 'vnpay',
+          payment_ref: String(params.vnp_TransactionNo || params.vnp_BankTranNo || ''),
+          updated_at: new Date()
+        }
+      }
+    );
+  } else if (order.payment_status !== 'paid') {
+    await Order.updateOne(
+      { id: order.id },
+      {
+        $set: {
+          payment_status: 'failed',
+          payment_provider: 'vnpay',
+          payment_ref: String(params.vnp_TransactionNo || params.vnp_BankTranNo || ''),
+          updated_at: new Date()
+        }
+      }
+    );
+  }
+
+  return { code: '00', message: 'Confirm Success', valid, order };
+}
 
 mongoOrdersRouter.use(async (_req, _res, next) => {
   await connectMongo();
   next();
+});
+
+mongoOrdersRouter.get('/payments/vnpay/return', async (req, res) => {
+  const result = await finalizeVnpay(req.query, 'return');
+  const paymentState = result.valid && isSuccessfulVnpayResponse(req.query) ? 'success' : 'failed';
+  const code = req.query.vnp_TxnRef || '';
+  return res.redirect(`${env.frontendUrl}/info.html?payment=${paymentState}&order=${encodeURIComponent(code)}`);
+});
+
+mongoOrdersRouter.get('/payments/vnpay/ipn', async (req, res) => {
+  const result = await finalizeVnpay(req.query, 'ipn');
+  return res.json({ RspCode: result.code, Message: result.message });
 });
 
 mongoOrdersRouter.post('/checkout', requireAuth, async (req, res) => {
