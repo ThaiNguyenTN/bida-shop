@@ -111,6 +111,37 @@ function parseNullableDateTime(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function normalizeCouponPayload(body = {}) {
+  const discountType = String(body.discountType || '').trim();
+  const value = discountType === 'free_shipping' ? 0 : Number(body.value || 0);
+  const minOrderAmount = Number(body.minOrderAmount || 0);
+  const usageLimit = body.usageLimit ? Number(body.usageLimit) : null;
+  if (!body.code || !discountType) throw new Error('Thiếu mã hoặc loại giảm giá');
+  if (!['percent', 'fixed', 'free_shipping'].includes(discountType)) throw new Error('Loại giảm giá không hợp lệ');
+  if (!Number.isFinite(minOrderAmount) || minOrderAmount < 0) throw new Error('Đơn tối thiểu không hợp lệ');
+  if (usageLimit !== null && (!Number.isInteger(usageLimit) || usageLimit <= 0)) throw new Error('Giới hạn dùng phải là số nguyên lớn hơn 0');
+  if (discountType === 'percent' && (!Number.isFinite(value) || value <= 0 || value > 100)) throw new Error('Voucher phần trăm phải lớn hơn 0% và không được vượt quá 100%');
+  if (discountType === 'fixed' && (!Number.isFinite(value) || value <= 0)) throw new Error('Giá trị voucher phải lớn hơn 0');
+  if (discountType === 'fixed' && minOrderAmount > 0 && value > minOrderAmount) throw new Error('Giá trị voucher không được lớn hơn đơn tối thiểu');
+  return {
+    code: String(body.code || '').trim().toUpperCase(),
+    discount_type: discountType,
+    value,
+    min_order_amount: minOrderAmount,
+    usage_limit: usageLimit,
+    active: body.active === false ? 0 : 1
+  };
+}
+
+function couponDates(body = {}) {
+  const startsAt = parseNullableDateTime(body.startsAt);
+  const endsAt = parseNullableDateTime(body.endsAt);
+  if (body.startsAt && !startsAt) throw new Error('Ngày bắt đầu không hợp lệ');
+  if (body.endsAt && !endsAt) throw new Error('Ngày kết thúc không hợp lệ');
+  if (startsAt && endsAt && startsAt > endsAt) throw new Error('Ngày kết thúc phải sau ngày bắt đầu');
+  return { starts_at: startsAt, ends_at: endsAt };
+}
+
 function normalizeVariants(variants = [], fallbackTipSize = null) {
   return (Array.isArray(variants) ? variants : [])
     .map((variant, index) => ({
@@ -417,6 +448,129 @@ mongoAdminRouter.get('/settings/general', async (_req, res) => {
 mongoAdminRouter.get('/coupons', async (_req, res) => {
   const coupons = await Coupon.find({}).sort({ created_at: -1 }).lean();
   return ok(res, coupons.map((coupon) => withoutMongoId({ ...coupon, active: toBool(coupon.active) })));
+});
+
+mongoAdminRouter.get('/coupons/:id/recipients', async (req, res) => {
+  const coupon = await Coupon.findOne({ id: Number(req.params.id) }).lean();
+  if (!coupon) return fail(res, 'Không tìm thấy voucher', 404);
+
+  const notifications = await Notification.find({ coupon_id: coupon.id }).lean();
+  const userIds = [...new Set(notifications.map((row) => row.user_id).filter(Boolean))];
+  const [users, usage] = await Promise.all([
+    userIds.length ? User.find({ id: { $in: userIds } }).lean() : [],
+    Order.aggregate([
+      { $match: { user_id: { $ne: null }, coupon_code: { $regex: `^${String(coupon.code).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } } },
+      { $group: { _id: '$user_id', used_count: { $sum: 1 }, used_revenue: { $sum: '$grand_total' }, discount_total: { $sum: '$discount_total' }, last_used_at: { $max: '$created_at' } } }
+    ])
+  ]);
+  const userMap = new Map(users.map((user) => [user.id, user]));
+  const usageMap = new Map(usage.map((row) => [Number(row._id), row]));
+  const notificationMap = new Map();
+  for (const row of notifications) {
+    if (!row.user_id) continue;
+    const current = notificationMap.get(row.user_id) || { received_count: 0, read_count: 0, first_sent_at: null, last_sent_at: null };
+    current.received_count += 1;
+    if (Number(row.is_read)) current.read_count += 1;
+    if (!current.first_sent_at || new Date(row.sent_at) < new Date(current.first_sent_at)) current.first_sent_at = row.sent_at;
+    if (!current.last_sent_at || new Date(row.sent_at) > new Date(current.last_sent_at)) current.last_sent_at = row.sent_at;
+    notificationMap.set(row.user_id, current);
+  }
+
+  const recipients = [...notificationMap.entries()].map(([userId, stats]) => {
+    const user = userMap.get(userId) || {};
+    const used = usageMap.get(Number(userId)) || {};
+    return {
+      id: userId,
+      full_name: user.full_name || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      points: user.points || 0,
+      membership_level: user.membership_level || 'Member',
+      customer_tag: user.customer_tag || 'new',
+      ...stats,
+      used_count: Number(used.used_count || 0),
+      used_revenue: Number(used.used_revenue || 0),
+      discount_total: Number(used.discount_total || 0),
+      last_used_at: used.last_used_at || null
+    };
+  });
+  const usageFromNonRecipients = usage
+    .filter((row) => !notificationMap.has(Number(row._id)))
+    .reduce((sum, row) => sum + Number(row.used_count || 0), 0);
+
+  return ok(res, {
+    coupon: withoutMongoId(coupon),
+    summary: {
+      recipient_count: recipients.length,
+      received_notifications: recipients.reduce((sum, row) => sum + Number(row.received_count || 0), 0),
+      read_notifications: recipients.reduce((sum, row) => sum + Number(row.read_count || 0), 0),
+      used_count: usage.reduce((sum, row) => sum + Number(row.used_count || 0), 0),
+      used_by_recipients: recipients.reduce((sum, row) => sum + Number(row.used_count || 0), 0),
+      usage_from_non_recipients: usageFromNonRecipients,
+      used_revenue: usage.reduce((sum, row) => sum + Number(row.used_revenue || 0), 0),
+      discount_total: usage.reduce((sum, row) => sum + Number(row.discount_total || 0), 0)
+    },
+    recipients
+  });
+});
+
+mongoAdminRouter.post('/coupons', requireRoles('admin', 'manager'), async (req, res) => {
+  try {
+    const payload = { ...normalizeCouponPayload(req.body || {}), ...couponDates(req.body || {}) };
+    const coupon = await Coupon.create({ id: await nextId('coupons'), ...payload, created_at: new Date() });
+    return ok(res, withoutMongoId({ ...coupon.toObject(), active: toBool(coupon.active) }), 201);
+  } catch (error) {
+    const duplicate = error?.code === 11000;
+    return fail(res, duplicate ? 'Mã voucher đã tồn tại' : error.message, duplicate ? 409 : 400);
+  }
+});
+
+mongoAdminRouter.put('/coupons/:id', requireRoles('admin', 'manager'), async (req, res) => {
+  try {
+    const payload = { ...normalizeCouponPayload(req.body || {}), ...couponDates(req.body || {}) };
+    const coupon = await Coupon.findOneAndUpdate(
+      { id: Number(req.params.id) },
+      { $set: payload },
+      { returnDocument: 'after' }
+    ).lean();
+    if (!coupon) return fail(res, 'Không tìm thấy voucher', 404);
+    return ok(res, withoutMongoId({ ...coupon, active: toBool(coupon.active) }));
+  } catch (error) {
+    const duplicate = error?.code === 11000;
+    return fail(res, duplicate ? 'Mã voucher đã tồn tại' : error.message, duplicate ? 409 : 400);
+  }
+});
+
+mongoAdminRouter.post('/coupons/:id/notify', requireRoles('admin', 'manager', 'cskh'), async (req, res) => {
+  const coupon = await Coupon.findOne({ id: Number(req.params.id) }).lean();
+  if (!coupon) return fail(res, 'Không tìm thấy voucher', 404);
+
+  const audience = String(req.body?.audience || 'vip');
+  const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map(Number).filter(Boolean) : [];
+  const minPoints = Math.max(0, Number(req.body?.minPoints || 0));
+  let filter = { role: 'customer', is_active: 1 };
+  if (audience === 'selected') {
+    if (!userIds.length) return fail(res, 'Hãy nhập ID khách hàng', 400);
+    filter = { ...filter, id: { $in: userIds } };
+  } else if (audience === 'vip') {
+    filter = { ...filter, $or: [{ customer_tag: 'vip' }, { membership_level: 'VIP' }] };
+  } else if (audience === 'points') {
+    filter = { ...filter, points: { $gte: minPoints } };
+  }
+
+  const customers = await User.find(filter).select('id').lean();
+  if (customers.length) {
+    await Notification.insertMany(await Promise.all(customers.map(async (customer) => ({
+      id: await nextId('notifications'),
+      user_id: customer.id,
+      coupon_id: coupon.id,
+      title: `Voucher ${coupon.code}`,
+      message: String(req.body?.message || `Bạn nhận được voucher ${coupon.code}`),
+      sent_at: new Date(),
+      is_read: 0
+    }))));
+  }
+  return ok(res, { sent: customers.length });
 });
 
 mongoAdminRouter.get('/content/banners', async (_req, res) => {
