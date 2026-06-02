@@ -1,6 +1,12 @@
 import { hashPassword } from '../src/lib/auth.js';
+import { env } from '../src/lib/env.js';
 import { query } from '../src/lib/db.js';
 import { slugify } from '../src/lib/http.js';
+
+if (String(env.dbProvider || '').toLowerCase() === 'mongodb') {
+  await import('./seed-mongo.js');
+  process.exit(0);
+}
 
 async function upsertUser({ email, password, fullName, role, phone = null, points = 0, membershipLevel = 'Standard' }) {
   const passwordHash = await hashPassword(password);

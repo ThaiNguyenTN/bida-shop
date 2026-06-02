@@ -1,6 +1,8 @@
 import { fail } from '../lib/http.js';
 import { verifyToken } from '../lib/auth.js';
 import { query } from '../lib/db.js';
+import { isMongoEnabled, connectMongo } from '../lib/mongo.js';
+import { User } from '../models/mongo.js';
 
 export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -9,14 +11,19 @@ export async function requireAuth(req, res, next) {
   try {
     const payload = verifyToken(token);
     let user = null;
-    try {
-      const result = await query(`SELECT id, email, full_name, phone, role, points, membership_level, customer_tag,
-        email_verified, email_verified_at, email_verification_status
-        FROM users WHERE id = $1 AND is_active = 1`, [payload.sub]);
-      user = result.rows[0] || null;
-    } catch {
-      const result = await query('SELECT id, email, full_name, phone, role, points, membership_level, customer_tag, email_verified FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
-      user = result.rows[0] ? { ...result.rows[0], email_verified_at: null, email_verification_status: null } : null;
+    if (isMongoEnabled()) {
+      await connectMongo();
+      user = await User.findOne({ id: Number(payload.sub), is_active: 1 }).lean();
+    } else {
+      try {
+        const result = await query(`SELECT id, email, full_name, phone, role, points, membership_level, customer_tag,
+          email_verified, email_verified_at, email_verification_status
+          FROM users WHERE id = $1 AND is_active = 1`, [payload.sub]);
+        user = result.rows[0] || null;
+      } catch {
+        const result = await query('SELECT id, email, full_name, phone, role, points, membership_level, customer_tag, email_verified FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
+        user = result.rows[0] ? { ...result.rows[0], email_verified_at: null, email_verification_status: null } : null;
+      }
     }
     if (!user) return fail(res, 'User not found', 401);
     req.user = user;

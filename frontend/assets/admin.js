@@ -145,11 +145,17 @@
 
   async function bootstrap() {
     currentTheme();
-    const me = await store.getMeSafe();
-    state.me = me?.user || null;
-    if (!state.me || !['admin', 'manager', 'warehouse', 'cskh'].includes(state.me.role)) return renderLogin();
-    await loadAdminData();
-    renderShell(state.activeTab);
+    try {
+      const me = await store.getMeSafe();
+      state.me = me?.user || null;
+      if (!state.me || !['admin', 'manager', 'warehouse', 'cskh'].includes(state.me.role)) return renderLogin();
+      await loadAdminData();
+      renderShell(state.activeTab);
+    } catch (error) {
+      app.innerHTML = `<div class="login-screen"><div class="card login-card"><div class="section-title"><h1>Admin không tải được</h1><span class="badge">API lỗi</span></div><p class="muted">${esc(error.message || 'Không kết nối được API admin.')}</p><div class="inline-actions"><button class="btn btn-primary" id="retryAdminLoad" type="button">Thử lại</button><button class="btn" id="logoutAdminLoad" type="button">Đăng nhập lại</button></div></div></div>`;
+      $('#retryAdminLoad').onclick = bootstrap;
+      $('#logoutAdminLoad').onclick = () => { store.setToken(''); renderLogin(); };
+    }
   }
   async function loadDashboard() {
     const params = new URLSearchParams({ from: state.dashboardRange.from, to: state.dashboardRange.to });

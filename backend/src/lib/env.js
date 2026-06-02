@@ -11,6 +11,8 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET || 'change-me-in-production',
   appBaseUrl: process.env.APP_BASE_URL || 'http://localhost:8080',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:8080',
+  dbProvider: process.env.DB_PROVIDER || 'sqlserver',
+  mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/bida_shop',
   db: {
     server: process.env.DB_SERVER || 'localhost',
     port: Number(process.env.DB_PORT || 1433),
