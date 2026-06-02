@@ -71,6 +71,10 @@ mongoAdminRouter.use(requireAuth, requireRoles('admin', 'manager', 'warehouse', 
 const toBool = (value) => value === true || value === 1;
 const truthyNumber = (value) => (toBool(value) ? 1 : 0);
 const dayKey = (date) => new Date(date).toISOString().slice(0, 10);
+const toNum = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
 
 function parseDateRange(fromRaw, toRaw) {
   const today = new Date();
@@ -99,6 +103,99 @@ function uploadedFiles(files, folder) {
     originalName: file.originalname,
     size: file.size
   }));
+}
+
+function parseNullableDateTime(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeVariants(variants = [], fallbackTipSize = null) {
+  return (Array.isArray(variants) ? variants : [])
+    .map((variant, index) => ({
+      code: String(variant.code || `VAR-${index + 1}`).trim(),
+      weight: String(variant.weight || '').trim(),
+      tip_size: String(variant.tipSize || variant.tip_size || fallbackTipSize || '').trim(),
+      stock: Math.max(0, toNum(variant.stock, 0)),
+      price_delta: toNum(variant.priceDelta ?? variant.price_delta, 0)
+    }))
+    .filter((variant) => variant.code || variant.weight || variant.tip_size || variant.stock > 0 || variant.price_delta !== 0);
+}
+
+function normalizeServices(services = []) {
+  return (Array.isArray(services) ? services : [])
+    .map((service) => {
+      const name = String(service?.name || '').trim();
+      return {
+        code: String(service?.code || slugify(name)).trim().toUpperCase(),
+        name,
+        price: toNum(service?.price, 0)
+      };
+    })
+    .filter((service) => service.name);
+}
+
+function normalizeImageUrls(imageUrls = []) {
+  return (Array.isArray(imageUrls) ? imageUrls : [])
+    .map((value) => String(value || '').trim().replace(/\\/g, '/'))
+    .filter(Boolean)
+    .map((image_url, index) => ({ image_url, sort_order: index + 1 }));
+}
+
+async function syncProductRelations(productId, body) {
+  const variants = normalizeVariants(body.variants, body.tipSize || null);
+  const services = normalizeServices(body.services);
+  const images = normalizeImageUrls(body.imageUrls);
+
+  await Promise.all([
+    ProductVariant.deleteMany({ product_id: productId }),
+    ProductService.deleteMany({ product_id: productId }),
+    ProductImage.deleteMany({ product_id: productId })
+  ]);
+
+  const [variantRows, serviceRows, imageRows] = await Promise.all([
+    Promise.all(variants.map(async (variant) => ({ id: await nextId('product_variants'), product_id: productId, ...variant }))),
+    Promise.all(services.map(async (service) => ({ id: await nextId('product_services'), product_id: productId, ...service }))),
+    Promise.all(images.map(async (image) => ({ id: await nextId('product_images'), product_id: productId, alt_text: String(body.name || ''), ...image })))
+  ]);
+
+  await Promise.all([
+    variantRows.length ? ProductVariant.insertMany(variantRows) : Promise.resolve(),
+    serviceRows.length ? ProductService.insertMany(serviceRows) : Promise.resolve(),
+    imageRows.length ? ProductImage.insertMany(imageRows) : Promise.resolve()
+  ]);
+
+  if (variants.length) {
+    await Product.updateOne({ id: productId }, { $set: { stock_total: variants.reduce((sum, variant) => sum + variant.stock, 0) } });
+  }
+}
+
+function productPayload(body = {}, existing = {}) {
+  const name = String(body.name || existing.name || '').trim();
+  return {
+    slug: String(body.slug || existing.slug || slugify(name)).trim(),
+    sku: String(body.sku || existing.sku || '').trim(),
+    name,
+    brand: String(body.brand || existing.brand || '').trim(),
+    type: String(body.type || existing.type || '').trim(),
+    category_id: body.categoryId ?? existing.category_id ?? null,
+    description: String(body.description ?? existing.description ?? ''),
+    long_description: String(body.longDescription ?? existing.long_description ?? ''),
+    price: toNum(body.price ?? existing.price, 0),
+    sale_price: body.salePrice === '' || body.salePrice == null ? null : toNum(body.salePrice, null),
+    cost: body.cost === '' || body.cost == null ? existing.cost ?? null : toNum(body.cost, null),
+    tip_size: String(body.tipSize ?? existing.tip_size ?? ''),
+    shaft_material: String(body.shaftMaterial ?? existing.shaft_material ?? ''),
+    joint_type: String(body.jointType ?? existing.joint_type ?? ''),
+    wrap_type: String(body.wrapType ?? existing.wrap_type ?? ''),
+    butt_material: String(body.buttMaterial ?? existing.butt_material ?? ''),
+    stock_total: Math.max(0, toNum(body.stockTotal ?? existing.stock_total, 0)),
+    is_featured: truthyNumber(body.isFeatured),
+    is_active: body.isActive === false ? 0 : 1,
+    metadata: body.metadata || existing.metadata || {},
+    updated_at: new Date()
+  };
 }
 
 function normalizeProduct(row, extras = {}) {
@@ -209,6 +306,32 @@ mongoAdminRouter.get('/products/:id', async (req, res) => {
   return ok(res, product);
 });
 
+mongoAdminRouter.post('/products', requireRoles('admin', 'manager', 'warehouse'), async (req, res) => {
+  const body = req.body || {};
+  if (!body.name || !body.sku || !body.brand || !body.type || !body.price) return fail(res, 'Thiếu dữ liệu sản phẩm');
+
+  const id = await nextId('products');
+  const payload = productPayload(body);
+  const product = await Product.create({
+    id,
+    ...payload,
+    slug: payload.slug || slugify(payload.name),
+    created_at: new Date()
+  });
+  await syncProductRelations(id, body);
+  return ok(res, await productDetail(product.id), 201);
+});
+
+mongoAdminRouter.put('/products/:id', requireRoles('admin', 'manager', 'warehouse'), async (req, res) => {
+  const id = Number(req.params.id);
+  const existing = await Product.findOne({ id }).lean();
+  if (!existing) return fail(res, 'Không tìm thấy sản phẩm', 404);
+
+  await Product.updateOne({ id }, { $set: productPayload(req.body || {}, existing) });
+  await syncProductRelations(id, { ...existing, ...(req.body || {}) });
+  return ok(res, await productDetail(id));
+});
+
 mongoAdminRouter.get('/orders', async (_req, res) => {
   const orders = await Order.find({}).sort({ created_at: -1 }).limit(200).lean();
   return ok(res, orders.map(withoutMongoId));
@@ -301,9 +424,85 @@ mongoAdminRouter.get('/content/banners', async (_req, res) => {
   return ok(res, banners.map((banner) => withoutMongoId({ ...banner, active: toBool(banner.active) })));
 });
 
+mongoAdminRouter.post('/content/banners', requireRoles('admin', 'manager'), async (req, res) => {
+  const body = req.body || {};
+  const banner = await Banner.create({
+    id: await nextId('banners'),
+    title: String(body.title || ''),
+    subtitle: String(body.subtitle || ''),
+    image_url: String(body.imageUrl || ''),
+    href: String(body.href || ''),
+    sort_order: toNum(body.sortOrder, 0),
+    active: body.active === false ? 0 : 1,
+    created_at: new Date()
+  });
+  return ok(res, withoutMongoId({ ...banner.toObject(), active: toBool(banner.active) }), 201);
+});
+
+mongoAdminRouter.put('/content/banners/:id', requireRoles('admin', 'manager'), async (req, res) => {
+  const body = req.body || {};
+  const banner = await Banner.findOneAndUpdate(
+    { id: Number(req.params.id) },
+    {
+      $set: {
+        title: String(body.title || ''),
+        subtitle: String(body.subtitle || ''),
+        image_url: String(body.imageUrl || ''),
+        href: String(body.href || ''),
+        sort_order: toNum(body.sortOrder, 0),
+        active: body.active === false ? 0 : 1
+      }
+    },
+    { returnDocument: 'after' }
+  ).lean();
+  if (!banner) return fail(res, 'Không tìm thấy banner', 404);
+  return ok(res, withoutMongoId({ ...banner, active: toBool(banner.active) }));
+});
+
 mongoAdminRouter.get('/content/posts', async (_req, res) => {
   const posts = await BlogPost.find({}).sort({ published_at: -1, created_at: -1 }).lean();
   return ok(res, posts.map((post) => withoutMongoId({ ...post, active: toBool(post.active) })));
+});
+
+mongoAdminRouter.post('/content/posts', requireRoles('admin', 'manager'), async (req, res) => {
+  const body = req.body || {};
+  const publishedAt = body.publishedAt ? parseNullableDateTime(body.publishedAt) : new Date();
+  if (body.publishedAt && !publishedAt) return fail(res, 'Ngày đăng không hợp lệ', 400);
+  const post = await BlogPost.create({
+    id: await nextId('blog_posts'),
+    slug: String(body.slug || slugify(body.title || 'blog-post')),
+    title: String(body.title || ''),
+    excerpt: String(body.excerpt || ''),
+    content: String(body.content || ''),
+    cover_image: String(body.coverImage || ''),
+    active: body.active === false ? 0 : 1,
+    published_at: publishedAt,
+    created_at: new Date()
+  });
+  return ok(res, withoutMongoId({ ...post.toObject(), active: toBool(post.active) }), 201);
+});
+
+mongoAdminRouter.put('/content/posts/:id', requireRoles('admin', 'manager'), async (req, res) => {
+  const body = req.body || {};
+  const publishedAt = body.publishedAt ? parseNullableDateTime(body.publishedAt) : new Date();
+  if (body.publishedAt && !publishedAt) return fail(res, 'Ngày đăng không hợp lệ', 400);
+  const post = await BlogPost.findOneAndUpdate(
+    { id: Number(req.params.id) },
+    {
+      $set: {
+        slug: String(body.slug || slugify(body.title || 'blog-post')),
+        title: String(body.title || ''),
+        excerpt: String(body.excerpt || ''),
+        content: String(body.content || ''),
+        cover_image: String(body.coverImage || ''),
+        active: body.active === false ? 0 : 1,
+        published_at: publishedAt
+      }
+    },
+    { returnDocument: 'after' }
+  ).lean();
+  if (!post) return fail(res, 'Không tìm thấy bài viết', 404);
+  return ok(res, withoutMongoId({ ...post, active: toBool(post.active) }));
 });
 
 mongoAdminRouter.get('/reviews', async (_req, res) => {
