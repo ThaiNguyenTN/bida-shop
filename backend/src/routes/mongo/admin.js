@@ -142,6 +142,22 @@ function couponDates(body = {}) {
   return { starts_at: startsAt, ends_at: endsAt };
 }
 
+function parseCustomerIds(rawValue) {
+  if (Array.isArray(rawValue)) {
+    return [...new Set(rawValue.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+  }
+  return [...new Set(String(rawValue || '')
+    .split(/[\s,;]+/)
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0))];
+}
+
+function sanitizeNotificationContent(value) {
+  return String(value || '')
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .trim();
+}
+
 function normalizeVariants(variants = [], fallbackTipSize = null) {
   return (Array.isArray(variants) ? variants : [])
     .map((variant, index) => ({
@@ -706,6 +722,51 @@ mongoAdminRouter.patch('/customers/:id/tag', requireRoles('admin', 'manager', 'c
   ).lean();
   if (!user) return fail(res, 'Không tìm thấy khách hàng', 404);
   return ok(res, withoutMongoId(user));
+});
+
+mongoAdminRouter.post('/notifications/send', requireRoles('admin', 'manager', 'cskh'), async (req, res) => {
+  const title = String(req.body?.title || '').trim();
+  const message = sanitizeNotificationContent(req.body?.message);
+  const audience = String(req.body?.audience || 'all').trim();
+  const customerTag = String(req.body?.customerTag || '').trim().toLowerCase();
+  const membershipLevel = String(req.body?.membershipLevel || '').trim();
+  const customerIds = parseCustomerIds(req.body?.customerIds || req.body?.customerCodes);
+
+  if (!title) return fail(res, 'Thiếu tiêu đề thông báo', 400);
+  if (!message) return fail(res, 'Thiếu nội dung thông báo', 400);
+
+  let filter = { role: 'customer', is_active: 1 };
+  if (audience === 'selected') {
+    if (!customerIds.length) return fail(res, 'Hãy nhập mã khách hàng cần gửi', 400);
+    filter = { ...filter, id: { $in: customerIds } };
+  } else if (audience === 'tag') {
+    if (!['new', 'vip', 'wholesale'].includes(customerTag)) return fail(res, 'Nhóm khách hàng không hợp lệ', 400);
+    filter = { ...filter, customer_tag: customerTag };
+  } else if (audience === 'membership') {
+    if (!membershipLevel) return fail(res, 'Hãy chọn hạng thành viên', 400);
+    filter = { ...filter, membership_level: membershipLevel };
+  }
+
+  const customers = await User.find(filter).select('id').lean();
+  if (customers.length) {
+    await Notification.insertMany(await Promise.all(customers.map(async (customer) => ({
+      id: await nextId('notifications'),
+      user_id: customer.id,
+      coupon_id: null,
+      title,
+      message,
+      sent_at: new Date(),
+      is_read: 0
+    }))));
+  }
+
+  return ok(res, {
+    sent: customers.length,
+    audience,
+    customerTag: customerTag || null,
+    membershipLevel: membershipLevel || null,
+    customerIds
+  });
 });
 
 mongoAdminRouter.put('/settings/general', requireRoles('admin', 'manager'), async (req, res) => {
