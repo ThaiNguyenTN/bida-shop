@@ -47,6 +47,22 @@ const toNum = (v, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
+function parseCustomerIds(rawValue) {
+  if (Array.isArray(rawValue)) {
+    return [...new Set(rawValue.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+  }
+  return [...new Set(String(rawValue || '')
+    .split(/[\s,;]+/)
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0))];
+}
+
+function sanitizeNotificationContent(value) {
+  return String(value || '')
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .trim();
+}
+
 function normalizeVariants(variants = [], fallbackTipSize = null) {
   return (Array.isArray(variants) ? variants : [])
     .map((variant, index) => ({
@@ -218,6 +234,10 @@ adminRouter.post('/uploads/blog-images', requireRoles('admin', 'manager'), blogU
   const files = Array.isArray(req.files) ? req.files : [];
   return ok(res, { files: files.map((file) => ({ url: `/uploads/blogs/${file.filename}`, originalName: file.originalname, size: file.size })) }, 201);
 });
+adminRouter.post('/uploads/notification-images', requireRoles('admin', 'manager', 'cskh'), blogUpload.array('images', 10), async (req, res) => {
+  const files = Array.isArray(req.files) ? req.files : [];
+  return ok(res, { files: files.map((file) => ({ url: `/uploads/blogs/${file.filename}`, originalName: file.originalname, size: file.size })) }, 201);
+});
 
 adminRouter.get('/products', async (_req, res) => {
   const result = await query(`SELECT id, slug, sku, name, brand, type, description, long_description, price, sale_price, cost, tip_size, shaft_material, joint_type, wrap_type, butt_material, stock_total, is_featured, is_active,
@@ -339,7 +359,14 @@ adminRouter.get('/customers', async (_req, res) => {
       ISNULL(u.customer_tag,'new') AS customer_tag,
       (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders_count,
       (SELECT ISNULL(SUM(o.grand_total),0) FROM orders o WHERE o.user_id = u.id AND o.payment_status = 'paid') AS paid_revenue,
-      (SELECT TOP 1 line1 + ISNULL(', ' + district,'') + ISNULL(', ' + city,'') FROM addresses a WHERE a.user_id = u.id ORDER BY is_default DESC, created_at DESC) AS primary_address
+      (SELECT TOP 1 line1
+        + CASE
+            WHEN NULLIF(ward,'') IS NOT NULL THEN ', ' + ward
+            WHEN NULLIF(district,'') IS NOT NULL THEN ', ' + district
+            ELSE ''
+          END
+        + ISNULL(', ' + city,'')
+      FROM addresses a WHERE a.user_id = u.id ORDER BY is_default DESC, created_at DESC) AS primary_address
     FROM users u WHERE u.role = 'customer' ORDER BY paid_revenue DESC, u.created_at DESC`);
   return ok(res, result.rows);
 });
@@ -369,6 +396,46 @@ adminRouter.patch('/customers/:id/tag', requireRoles('admin', 'manager', 'cskh')
   const tag = String(req.body?.customerTag || 'new').trim();
   await query('UPDATE users SET customer_tag = $2, membership_level = CASE WHEN $2 = \'vip\' THEN \'VIP\' WHEN $2 = \'wholesale\' THEN \'Wholesale\' ELSE membership_level END, updated_at = SYSUTCDATETIME() WHERE id = $1', [req.params.id, tag]);
   return ok(res, { id: Number(req.params.id), customerTag: tag });
+});
+
+adminRouter.post('/notifications/send', requireRoles('admin', 'manager', 'cskh'), async (req, res) => {
+  const title = String(req.body?.title || '').trim();
+  const message = sanitizeNotificationContent(req.body?.message);
+  const audience = String(req.body?.audience || 'all').trim();
+  const customerTag = String(req.body?.customerTag || '').trim().toLowerCase();
+  const membershipLevel = String(req.body?.membershipLevel || '').trim();
+  const customerIds = parseCustomerIds(req.body?.customerIds || req.body?.customerCodes);
+
+  if (!title) return fail(res, 'Thiếu tiêu đề thông báo', 400);
+  if (!message) return fail(res, 'Thiếu nội dung thông báo', 400);
+
+  let customers = [];
+  if (audience === 'selected') {
+    if (!customerIds.length) return fail(res, 'Hãy nhập mã khách hàng cần gửi', 400);
+    customers = (await query(`SELECT id FROM users WHERE role = 'customer' AND id IN (${customerIds.map((_, index) => `$${index + 1}`).join(',')})`, customerIds)).rows;
+  } else if (audience === 'tag') {
+    if (!['new', 'vip', 'wholesale'].includes(customerTag)) return fail(res, 'Nhóm khách hàng không hợp lệ', 400);
+    customers = (await query(`SELECT id FROM users WHERE role = 'customer' AND ISNULL(customer_tag, 'new') = $1`, [customerTag])).rows;
+  } else if (audience === 'membership') {
+    if (!membershipLevel) return fail(res, 'Hãy chọn hạng thành viên', 400);
+    customers = (await query(`SELECT id FROM users WHERE role = 'customer' AND membership_level = $1`, [membershipLevel])).rows;
+  } else {
+    customers = (await query(`SELECT id FROM users WHERE role = 'customer'`)).rows;
+  }
+
+  await withTransaction(async (tx) => {
+    for (const customer of customers) {
+      await createNotification({ tx, userId: customer.id, title, message });
+    }
+  });
+
+  return ok(res, {
+    sent: customers.length,
+    audience,
+    customerTag: customerTag || null,
+    membershipLevel: membershipLevel || null,
+    customerIds
+  });
 });
 
 adminRouter.get('/coupons', async (_req, res) => ok(res, (await query('SELECT * FROM coupons ORDER BY created_at DESC')).rows));

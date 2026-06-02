@@ -8,9 +8,18 @@ export async function requireAuth(req, res, next) {
   if (!token) return fail(res, 'Unauthorized', 401);
   try {
     const payload = verifyToken(token);
-    const result = await query('SELECT id, email, full_name, phone, role, points, membership_level, customer_tag FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
-    if (!result.rows[0]) return fail(res, 'User not found', 401);
-    req.user = result.rows[0];
+    let user = null;
+    try {
+      const result = await query(`SELECT id, email, full_name, phone, role, points, membership_level, customer_tag,
+        email_verified, email_verified_at, email_verification_status
+        FROM users WHERE id = $1 AND is_active = 1`, [payload.sub]);
+      user = result.rows[0] || null;
+    } catch {
+      const result = await query('SELECT id, email, full_name, phone, role, points, membership_level, customer_tag, email_verified FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
+      user = result.rows[0] ? { ...result.rows[0], email_verified_at: null, email_verification_status: null } : null;
+    }
+    if (!user) return fail(res, 'User not found', 401);
+    req.user = user;
     next();
   } catch (error) {
     return fail(res, 'Invalid token', 401, error.message);

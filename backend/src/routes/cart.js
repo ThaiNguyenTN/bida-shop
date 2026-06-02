@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { Router } from 'express';
 import { query, withTransaction } from '../lib/db.js';
 import { fail, ok, parseJson } from '../lib/http.js';
@@ -6,8 +5,22 @@ import { verifyToken } from '../lib/auth.js';
 
 export const cartRouter = Router();
 
-function createGuestToken() {
-  return crypto.randomUUID();
+function emptyCartSnapshot() {
+  return {
+    cartId: null,
+    guestToken: null,
+    items: [],
+    summary: {
+      totalQuantity: 0,
+      selectedQuantity: 0,
+      itemCount: 0,
+      selectedItemCount: 0,
+      subtotal: 0,
+      selectedSubtotal: 0,
+      shipping: 0,
+      grandTotal: 0
+    }
+  };
 }
 
 function normalizeCodes(value) {
@@ -25,27 +38,29 @@ async function getOptionalUser(req) {
   if (!token) return null;
   try {
     const payload = verifyToken(token);
-    const result = await query('SELECT id, email, full_name, role FROM users WHERE id = $1 AND is_active = 1', [payload.sub]);
+    const result = await query(`SELECT id, email, full_name, role, email_verified
+      FROM users WHERE id = $1 AND is_active = 1`, [payload.sub]);
     return result.rows[0] || null;
   } catch {
     return null;
   }
 }
 
+async function getRequiredUser(req) {
+  const user = await getOptionalUser(req);
+  if (!user?.id) throw new Error('Vui lòng đăng nhập để sử dụng giỏ hàng');
+  return user;
+}
+
 async function findActiveCartByUser(userId, tx = null) {
-  const result = await query('SELECT TOP 1 id, user_id, guest_token, status FROM carts WHERE user_id = $1 AND status = $2 ORDER BY updated_at DESC, id DESC', [userId, 'active'], tx);
+  const result = await query('SELECT TOP 1 id, user_id, status FROM carts WHERE user_id = $1 AND status = $2 ORDER BY updated_at DESC, id DESC', [userId, 'active'], tx);
   return result.rows[0] || null;
 }
 
-async function findActiveCartByGuest(guestToken, tx = null) {
-  const result = await query('SELECT TOP 1 id, user_id, guest_token, status FROM carts WHERE guest_token = $1 AND status = $2 ORDER BY updated_at DESC, id DESC', [guestToken, 'active'], tx);
-  return result.rows[0] || null;
-}
-
-async function createCart({ userId = null, guestToken = null }, tx = null) {
+async function createCart(userId, tx = null) {
   const inserted = await query(
-    'INSERT INTO carts(user_id, guest_token, status) OUTPUT INSERTED.id, INSERTED.user_id, INSERTED.guest_token, INSERTED.status VALUES ($1, $2, $3)',
-    [userId, guestToken, 'active'],
+    'INSERT INTO carts(user_id, guest_token, status) OUTPUT INSERTED.id, INSERTED.user_id, INSERTED.status VALUES ($1, NULL, $2)',
+    [userId, 'active'],
     tx
   );
   return inserted.rows[0];
@@ -56,66 +71,17 @@ async function touchCart(cartId, tx = null) {
 }
 
 async function getOrCreateUserCart(userId, tx = null) {
-  return (await findActiveCartByUser(userId, tx)) || createCart({ userId }, tx);
+  return (await findActiveCartByUser(userId, tx)) || createCart(userId, tx);
 }
 
-async function getOrCreateGuestCart(guestToken, tx = null) {
-  return (await findActiveCartByGuest(guestToken, tx)) || createCart({ guestToken }, tx);
-}
-
-async function mergeGuestCartIntoUser(userId, guestToken, tx = null) {
-  const guestCart = await findActiveCartByGuest(guestToken, tx);
-  const userCart = await getOrCreateUserCart(userId, tx);
-  if (!guestCart || guestCart.id === userCart.id) {
-    return userCart;
-  }
-
-  const guestItems = await query('SELECT * FROM cart_items WHERE cart_id = $1 ORDER BY id ASC', [guestCart.id], tx);
-  for (const item of guestItems.rows) {
-    const existing = await query(
-      'SELECT TOP 1 id, quantity, is_selected FROM cart_items WHERE cart_id = $1 AND product_id = $2 AND ISNULL(variant_id, 0) = ISNULL($3, 0) AND ISNULL(selected_services, $4) = $4',
-      [userCart.id, item.product_id, item.variant_id || 0, item.selected_services || '[]'],
-      tx
-    );
-
-    if (existing.rows[0]) {
-      const mergedQuantity = Number(existing.rows[0].quantity || 0) + Number(item.quantity || 0);
-      const mergedSelected = Number(existing.rows[0].is_selected || 0) || Number(item.is_selected || 0) ? 1 : 0;
-      await query(
-        'UPDATE cart_items SET quantity = $2, is_selected = $3, updated_at = SYSUTCDATETIME() WHERE id = $1',
-        [existing.rows[0].id, mergedQuantity, mergedSelected],
-        tx
-      );
-    } else {
-      await query(
-        'INSERT INTO cart_items(cart_id, product_id, variant_id, quantity, selected_services, unit_price, is_selected) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [userCart.id, item.product_id, item.variant_id || null, item.quantity, item.selected_services || '[]', item.unit_price, item.is_selected ? 1 : 0],
-        tx
-      );
-    }
-  }
-
-  await query('DELETE FROM cart_items WHERE cart_id = $1', [guestCart.id], tx);
-  await query('UPDATE carts SET status = $2, updated_at = SYSUTCDATETIME() WHERE id = $1', [guestCart.id, 'merged'], tx);
-  await touchCart(userCart.id, tx);
-  return userCart;
-}
-
-async function resolveCart(req, tx = null) {
-  const user = await getOptionalUser(req);
-  const incomingGuestToken = String(req.headers['x-guest-token'] || '').trim() || null;
-
-  if (user?.id) {
-    const cart = incomingGuestToken ? await mergeGuestCartIntoUser(user.id, incomingGuestToken, tx) : await getOrCreateUserCart(user.id, tx);
-    return { cart, user, guestToken: null };
-  }
-
-  const guestToken = incomingGuestToken || createGuestToken();
-  const cart = await getOrCreateGuestCart(guestToken, tx);
-  return { cart, user: null, guestToken };
+async function resolveAuthenticatedCart(req, tx = null) {
+  const user = await getRequiredUser(req);
+  const cart = await getOrCreateUserCart(user.id, tx);
+  return { cart, user };
 }
 
 async function loadCartSnapshot(cartId) {
+  if (!cartId) return emptyCartSnapshot();
   const itemResult = await query(`SELECT ci.id, ci.cart_id, ci.product_id, ci.variant_id, ci.quantity, ci.selected_services, ci.unit_price, ci.is_selected,
       p.slug, p.sku, p.name, p.brand, p.type, p.price, p.sale_price, p.stock_total, p.tip_size AS product_tip_size,
       pv.weight AS variant_weight, pv.tip_size AS variant_tip_size, pv.stock AS variant_stock,
@@ -173,6 +139,8 @@ async function loadCartSnapshot(cartId) {
   const shipping = items.some((item) => item.isSelected) ? shippingStandard : 0;
 
   return {
+    cartId,
+    guestToken: null,
     items,
     summary: {
       totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
@@ -207,18 +175,17 @@ async function pricingForCartItem(productId, variantId, selectedServices, tx = n
 
   return {
     product,
-    variant,
     stock,
-    serviceCodes,
     selectedServicesJson: codesKey(serviceCodes),
     unitPrice
   };
 }
 
 cartRouter.get('/', async (req, res) => {
-  const { cart, guestToken } = await resolveCart(req);
-  const snapshot = await loadCartSnapshot(cart.id);
-  return ok(res, { cartId: cart.id, guestToken, ...snapshot });
+  const user = await getOptionalUser(req);
+  if (!user?.id) return ok(res, emptyCartSnapshot());
+  const cart = await getOrCreateUserCart(user.id);
+  return ok(res, await loadCartSnapshot(cart.id));
 });
 
 cartRouter.post('/items', async (req, res) => {
@@ -226,7 +193,7 @@ cartRouter.post('/items', async (req, res) => {
     const body = req.body || {};
     const quantity = Math.max(1, Number(body.quantity || 1));
     const result = await withTransaction(async (tx) => {
-      const { cart, guestToken } = await resolveCart(req, tx);
+      const { cart } = await resolveAuthenticatedCart(req, tx);
       const pricing = await pricingForCartItem(body.productId, body.variantId || null, body.selectedServices || [], tx);
       if (pricing.stock < quantity) throw new Error(`Tồn kho không đủ cho ${pricing.product.name}`);
 
@@ -253,13 +220,13 @@ cartRouter.post('/items', async (req, res) => {
       }
 
       await touchCart(cart.id, tx);
-      return { cartId: cart.id, guestToken };
+      return cart.id;
     });
 
-    const snapshot = await loadCartSnapshot(result.cartId);
-    return ok(res, { guestToken: result.guestToken, cartId: result.cartId, ...snapshot }, 201);
+    return ok(res, await loadCartSnapshot(result), 201);
   } catch (error) {
-    return fail(res, error.message || 'Không thêm được vào giỏ', 400);
+    const status = error.message === 'Vui lòng đăng nhập để sử dụng giỏ hàng' ? 401 : 400;
+    return fail(res, error.message || 'Không thêm được vào giỏ', status);
   }
 });
 
@@ -267,7 +234,7 @@ cartRouter.patch('/items/:id', async (req, res) => {
   try {
     const body = req.body || {};
     const result = await withTransaction(async (tx) => {
-      const { cart, guestToken } = await resolveCart(req, tx);
+      const { cart } = await resolveAuthenticatedCart(req, tx);
       const current = await query('SELECT * FROM cart_items WHERE id = $1 AND cart_id = $2', [req.params.id, cart.id], tx);
       const item = current.rows[0];
       if (!item) throw new Error('Không tìm thấy dòng giỏ hàng');
@@ -283,51 +250,49 @@ cartRouter.patch('/items/:id', async (req, res) => {
         tx
       );
       await touchCart(cart.id, tx);
-      return { cartId: cart.id, guestToken };
+      return cart.id;
     });
 
-    const snapshot = await loadCartSnapshot(result.cartId);
-    return ok(res, { guestToken: result.guestToken, cartId: result.cartId, ...snapshot });
+    return ok(res, await loadCartSnapshot(result));
   } catch (error) {
-    return fail(res, error.message || 'Không cập nhật được giỏ hàng', 400);
+    const status = error.message === 'Vui lòng đăng nhập để sử dụng giỏ hàng' ? 401 : 400;
+    return fail(res, error.message || 'Không cập nhật được giỏ hàng', status);
   }
 });
 
 cartRouter.delete('/items/:id', async (req, res) => {
-  const result = await withTransaction(async (tx) => {
-    const { cart, guestToken } = await resolveCart(req, tx);
-    await query('DELETE FROM cart_items WHERE id = $1 AND cart_id = $2', [req.params.id, cart.id], tx);
-    await touchCart(cart.id, tx);
-    return { cartId: cart.id, guestToken };
-  });
-  const snapshot = await loadCartSnapshot(result.cartId);
-  return ok(res, { guestToken: result.guestToken, cartId: result.cartId, ...snapshot });
+  try {
+    const result = await withTransaction(async (tx) => {
+      const { cart } = await resolveAuthenticatedCart(req, tx);
+      await query('DELETE FROM cart_items WHERE id = $1 AND cart_id = $2', [req.params.id, cart.id], tx);
+      await touchCart(cart.id, tx);
+      return cart.id;
+    });
+    return ok(res, await loadCartSnapshot(result));
+  } catch (error) {
+    const status = error.message === 'Vui lòng đăng nhập để sử dụng giỏ hàng' ? 401 : 400;
+    return fail(res, error.message || 'Không cập nhật được giỏ hàng', status);
+  }
 });
 
 cartRouter.delete('/selected', async (req, res) => {
-  const result = await withTransaction(async (tx) => {
-    const { cart, guestToken } = await resolveCart(req, tx);
-    await query('DELETE FROM cart_items WHERE cart_id = $1 AND is_selected = 1', [cart.id], tx);
-    await touchCart(cart.id, tx);
-    return { cartId: cart.id, guestToken };
-  });
-  const snapshot = await loadCartSnapshot(result.cartId);
-  return ok(res, { guestToken: result.guestToken, cartId: result.cartId, ...snapshot });
+  try {
+    const result = await withTransaction(async (tx) => {
+      const { cart } = await resolveAuthenticatedCart(req, tx);
+      await query('DELETE FROM cart_items WHERE cart_id = $1 AND is_selected = 1', [cart.id], tx);
+      await touchCart(cart.id, tx);
+      return cart.id;
+    });
+    return ok(res, await loadCartSnapshot(result));
+  } catch (error) {
+    const status = error.message === 'Vui lòng đăng nhập để sử dụng giỏ hàng' ? 401 : 400;
+    return fail(res, error.message || 'Không cập nhật được giỏ hàng', status);
+  }
 });
 
 cartRouter.post('/merge', async (req, res) => {
   const user = await getOptionalUser(req);
   if (!user?.id) return fail(res, 'Unauthorized', 401);
-  const guestToken = String(req.headers['x-guest-token'] || req.body?.guestToken || '').trim();
-  if (!guestToken) {
-    const cart = await getOrCreateUserCart(user.id);
-    const snapshot = await loadCartSnapshot(cart.id);
-    return ok(res, { cartId: cart.id, guestToken: null, ...snapshot });
-  }
-  const result = await withTransaction(async (tx) => {
-    const cart = await mergeGuestCartIntoUser(user.id, guestToken, tx);
-    return { cartId: cart.id };
-  });
-  const snapshot = await loadCartSnapshot(result.cartId);
-  return ok(res, { cartId: result.cartId, guestToken: null, ...snapshot });
+  const cart = await getOrCreateUserCart(user.id);
+  return ok(res, await loadCartSnapshot(cart.id));
 });

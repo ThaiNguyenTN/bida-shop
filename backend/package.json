@@ -7,7 +7,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "smtp:test": "node scripts/smtp-test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

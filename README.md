@@ -328,6 +328,13 @@ DB_USER=sa
 DB_PASSWORD=YourStrongPassword123!
 DB_ENCRYPT=false
 DB_TRUST_SERVER_CERT=true
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your-gmail@gmail.com
+SMTP_PASS=your-16-char-app-password
+SMTP_FROM=your-gmail@gmail.com
 ```
 
 ### 9.3. Tạo database
@@ -341,6 +348,7 @@ cd backend
 npm install
 npm run migrate
 npm run seed
+npm run smtp:test -- your-real-email@example.com
 npm run dev
 ```
 

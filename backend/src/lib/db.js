@@ -50,9 +50,21 @@ export async function query(text, params = [], tx = null) {
   return { rows: normalizeRows(result.recordset || []), rowsAffected: result.rowsAffected || [] };
 }
 
+function splitSqlBatches(sqlText = '') {
+  return String(sqlText)
+    .split(/^\s*GO\s*$/gim)
+    .map((batch) => batch.trim())
+    .filter(Boolean);
+}
+
 export async function executeBatch(sqlText) {
   const pool = await getPool();
-  return pool.request().batch(sqlText);
+  const batches = splitSqlBatches(sqlText);
+  let lastResult = null;
+  for (const batch of batches) {
+    lastResult = await pool.request().batch(batch);
+  }
+  return lastResult;
 }
 
 export async function withTransaction(work) {
