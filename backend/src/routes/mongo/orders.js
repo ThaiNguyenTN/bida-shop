@@ -269,6 +269,41 @@ mongoOrdersRouter.post('/checkout', requireAuth, async (req, res) => {
   }
 });
 
+mongoOrdersRouter.post('/:orderCode/payments/vnpay/retry', requireAuth, async (req, res) => {
+  try {
+    const order = await Order.findOne({ order_code: req.params.orderCode, user_id: req.user.id }).lean();
+    if (!order) return fail(res, 'Không tìm thấy đơn hàng', 404);
+    if (order.payment_method !== 'vnpay') return fail(res, 'Đơn hàng này không dùng VNPAY', 400);
+    if (order.payment_status === 'paid') return fail(res, 'Đơn hàng này đã thanh toán thành công', 400);
+    await Order.updateOne(
+      { id: order.id },
+      {
+        $set: {
+          payment_status: 'pending',
+          payment_provider: 'vnpay',
+          payment_requested_at: new Date(),
+          updated_at: new Date()
+        }
+      }
+    );
+    const paymentUrl = createPaymentUrl({
+      orderCode: order.order_code,
+      amount: order.grand_total,
+      ipAddr: req.ip,
+      orderInfo: `Thanh toan lai ${order.order_code}`,
+      returnUrl: vnpayReturnUrl(req)
+    });
+    return ok(res, {
+      orderCode: order.order_code,
+      paymentMethod: 'vnpay',
+      paymentStatus: 'pending',
+      paymentUrl
+    });
+  } catch (error) {
+    return fail(res, error.message, 400);
+  }
+});
+
 mongoOrdersRouter.get('/:orderCode', async (req, res) => {
   const order = await Order.findOne({ order_code: req.params.orderCode }).lean();
   if (!order) return fail(res, 'Không tìm thấy đơn hàng', 404);

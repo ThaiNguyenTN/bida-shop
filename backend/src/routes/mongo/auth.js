@@ -40,6 +40,22 @@ function verificationResponse(email, cooldownSeconds = 60) {
 function requiresVerifiedEmail(user) {
   return String(user?.role || '').toLowerCase() === 'customer' && !Number(user?.email_verified);
 }
+function getReviewError({ rating, comment }) {
+  const rate = Number(rating || 0);
+  const text = String(comment || '').trim();
+  if (!Number.isInteger(rate) || rate < 1 || rate > 5) return 'Điểm đánh giá phải từ 1 đến 5 sao.';
+  if (text.length < 10) return 'Nhận xét phải có ít nhất 10 ký tự.';
+  if (text.length > 500) return 'Nhận xét không được vượt quá 500 ký tự.';
+  if (/(.)\1{9,}/i.test(text)) return 'Nhận xét không được lặp ký tự quá nhiều.';
+  return null;
+}
+function reviewContainsLink(text) {
+  return /(https?:\/\/|www\.|[a-z0-9-]+\.(com|vn|net|org|io|co|me|info|xyz|shop|site|link)\b)/i.test(String(text || '').trim());
+}
+function parseNotificationIds(rawIds) {
+  if (!Array.isArray(rawIds)) return [];
+  return [...new Set(rawIds.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+}
 function getEmailDeliveryError(error) {
   const message = String(error?.message || '');
   if (error?.code === 'SMTP_NOT_CONFIGURED') return { message: 'SMTP chưa được cấu hình đúng trong backend/.env.', details: message };
@@ -231,9 +247,21 @@ mongoAuthRouter.post('/notifications/:id/read', requireAuth, async (req, res) =>
   await Notification.updateOne({ id: Number(req.params.id), user_id: req.user.id }, { $set: { is_read: 1 } });
   return ok(res, { id: Number(req.params.id), isRead: true });
 });
+mongoAuthRouter.post('/notifications/read', requireAuth, async (req, res) => {
+  const ids = parseNotificationIds(req.body?.ids);
+  if (!ids.length) return fail(res, 'Hãy chọn ít nhất một thông báo', 400);
+  await Notification.updateMany({ user_id: req.user.id, id: { $in: ids } }, { $set: { is_read: 1 } });
+  return ok(res, { ids, isRead: true });
+});
 mongoAuthRouter.post('/notifications/read-all', requireAuth, async (req, res) => {
   await Notification.updateMany({ user_id: req.user.id }, { $set: { is_read: 1 } });
   return ok(res, { success: true });
+});
+mongoAuthRouter.delete('/notifications', requireAuth, async (req, res) => {
+  const ids = parseNotificationIds(req.body?.ids);
+  if (!ids.length) return fail(res, 'Hãy chọn ít nhất một thông báo', 400);
+  const result = await Notification.deleteMany({ user_id: req.user.id, id: { $in: ids } });
+  return ok(res, { deleted: result.deletedCount || 0, ids });
 });
 
 mongoAuthRouter.post('/wishlist/:productId', requireAuth, async (req, res) => {
@@ -265,4 +293,57 @@ mongoAuthRouter.post('/addresses', requireAuth, async (req, res) => {
     is_default: body.isDefault ? 1 : 0
   });
   return ok(res, address, 201);
+});
+
+mongoAuthRouter.post('/reviews', requireAuth, async (req, res) => {
+  const { orderItemId, rating, comment } = req.body || {};
+  if (!orderItemId) return fail(res, 'Thiếu dòng sản phẩm cần đánh giá', 400);
+  if (reviewContainsLink(comment)) return fail(res, 'Nhận xét không được chứa link hoặc địa chỉ website.', 400);
+  const reviewError = getReviewError({ rating, comment });
+  if (reviewError) return fail(res, reviewError, 400);
+
+  const item = await OrderItem.findOne({ id: Number(orderItemId) }).lean();
+  if (!item) return fail(res, 'Không tìm thấy dòng sản phẩm cần đánh giá', 404);
+  const order = await Order.findOne({ id: item.order_id, user_id: req.user.id }).lean();
+  if (!order || !(order.payment_status === 'paid' || order.order_status === 'completed')) {
+    return fail(res, 'Bạn chỉ có thể đánh giá sản phẩm đã mua và đã thanh toán hoặc hoàn thành', 403);
+  }
+
+  const rate = Number(rating);
+  const reviewComment = String(comment || '').trim();
+  const existing = await ProductReview.findOne({ user_id: req.user.id, order_item_id: Number(orderItemId) });
+  if (existing) {
+    existing.rating = rate;
+    existing.comment = reviewComment;
+    existing.is_visible = 1;
+    existing.updated_at = new Date();
+    await existing.save();
+  } else {
+    await ProductReview.create({
+      id: await nextId('product_reviews'),
+      user_id: req.user.id,
+      product_id: item.product_id,
+      order_item_id: Number(orderItemId),
+      rating: rate,
+      comment: reviewComment,
+      is_visible: 1
+    });
+  }
+
+  const summary = await ProductReview.aggregate([
+    { $match: { product_id: item.product_id, is_visible: 1 } },
+    { $group: { _id: '$product_id', rating: { $avg: '$rating' }, review_count: { $sum: 1 } } }
+  ]);
+  await Product.updateOne(
+    { id: item.product_id },
+    {
+      $set: {
+        rating: summary[0]?.rating || 0,
+        review_count: summary[0]?.review_count || 0,
+        updated_at: new Date()
+      }
+    }
+  );
+
+  return ok(res, { success: true });
 });
