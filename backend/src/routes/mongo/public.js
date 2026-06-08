@@ -116,7 +116,10 @@ function normalizeSettings(value = {}) {
     zalo: value.zalo || 'https://zalo.me/0339380482',
     messenger: value.messenger || 'https://www.facebook.com/share/18Wd2mrmYA/?mibextid=wwXIfr',
     showroom: value.showroom || '123 Nguyễn Trãi, Q.1, TP.HCM',
-    shipping: value.shipping || { standard: 45000, freeFrom: 5000000 },
+    shipping: {
+      standard: Number(value.shipping?.standard ?? 45000),
+      freeFrom: Number(value.shipping?.freeFrom ?? 5000000)
+    },
     bank,
     bankQr: value.bankQr || '',
     mapEmbed: value.mapEmbed || '',

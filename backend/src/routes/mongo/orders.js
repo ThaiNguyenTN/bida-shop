@@ -15,6 +15,7 @@ import {
   Product,
   ProductService,
   ProductVariant,
+  Setting,
   nextId
 } from '../../models/mongo.js';
 
@@ -30,6 +31,21 @@ function frontendBaseUrl() {
 }
 function vnpayReturnUrl(req) {
   return process.env.VNPAY_RETURN_URL || `${backendBaseUrl(req)}/api/orders/payments/vnpay/return`;
+}
+function normalizeShippingSettings(value = {}) {
+  const shipping = value.shipping || {};
+  return {
+    standard: Number(shipping.standard ?? 45000),
+    freeFrom: Number(shipping.freeFrom ?? 5000000)
+  };
+}
+async function getShippingSettings() {
+  const setting = await Setting.findOne({ setting_key: 'general' }).lean();
+  return normalizeShippingSettings(setting?.setting_value || {});
+}
+function shippingAmountForSubtotal(subtotal, settings) {
+  if (settings.freeFrom > 0 && Number(subtotal || 0) >= settings.freeFrom) return 0;
+  return Math.max(0, Number(settings.standard || 0));
 }
 
 function normalizePhone(value) {
@@ -66,9 +82,11 @@ async function evaluateCoupon(code, subtotal) {
   if (coupon.ends_at && new Date(coupon.ends_at) < now) throw new Error('Voucher đã hết hạn.');
   if (coupon.usage_limit && Number(coupon.used_count || 0) >= Number(coupon.usage_limit)) throw new Error('Voucher đã hết lượt sử dụng.');
   if (subtotal < Number(coupon.min_order_amount || 0)) throw new Error('Đơn hàng chưa đạt giá trị tối thiểu của voucher.');
-  const discount = coupon.discount_type === 'percent'
-    ? Math.min(subtotal, Math.round(subtotal * Number(coupon.value || 0) / 100))
-    : Math.min(subtotal, Number(coupon.value || 0));
+  const discount = coupon.discount_type === 'free_shipping'
+    ? 0
+    : coupon.discount_type === 'percent'
+      ? Math.min(subtotal, Math.round(subtotal * Number(coupon.value || 0) / 100))
+      : Math.min(subtotal, Number(coupon.value || 0));
   return { coupon, discount };
 }
 async function ensureAddress(userId, customer) {
@@ -217,7 +235,8 @@ mongoOrdersRouter.post('/checkout', requireAuth, async (req, res) => {
     const lines = await buildCheckoutLines(cart.id);
     const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
     const { coupon, discount } = await evaluateCoupon(req.body?.couponCode, subtotal);
-    const shipping = lines.length ? 45000 : 0;
+    const shippingSettings = await getShippingSettings();
+    const shipping = coupon?.discount_type === 'free_shipping' ? 0 : shippingAmountForSubtotal(subtotal, shippingSettings);
     const grandTotal = Math.max(0, subtotal - discount + shipping);
     const code = orderCode();
     const order = await Order.create({

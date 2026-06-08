@@ -81,6 +81,21 @@
     };
   }
 
+  function shippingSettings() {
+    const shipping = state.settings?.shipping || {};
+    return {
+      standard: Number(shipping.standard ?? 45000),
+      freeFrom: Number(shipping.freeFrom ?? 5000000)
+    };
+  }
+
+  function calculateShipping(subtotal, hasSelectedItems = true) {
+    if (!hasSelectedItems) return 0;
+    const shipping = shippingSettings();
+    if (shipping.freeFrom > 0 && Number(subtotal || 0) >= shipping.freeFrom) return 0;
+    return Math.max(0, shipping.standard || 0);
+  }
+
   function buildBankQrUrl(order) {
     const bank = bankSettings();
     if (bank.bankCode && bank.accountNo) {
@@ -1370,14 +1385,15 @@ function bindRegisterLiveValidation(form) {
     const mustLoginHtml = !state.me ? `<div class="notice" style="margin-bottom:14px;"><strong>Vui lòng đăng nhập để đặt hàng</strong><div class="muted">Bạn vẫn có thể thêm sản phẩm vào giỏ, nhưng phải đăng nhập trước khi tạo đơn.</div><div style="margin-top:10px;"><a class="btn btn-primary" href="login.html">Đăng nhập</a><a class="btn" href="register.html">Đăng ký</a></div></div>` : '';
 
     function selectedLines() { return lines.filter((line) => line.isSelected); }
-    function baseShippingAmount() { return selectedLines().length ? Number(state.settings.shipping?.standard || 45000) : 0; }
+    function selectedSubtotal() { return selectedLines().reduce((sum, line) => sum + Number(line.lineTotal || 0), 0); }
+    function baseShippingAmount() { return calculateShipping(selectedSubtotal(), Boolean(selectedLines().length)); }
     if (!selectedLines().length) {
       app.innerHTML = `<section class="section"><div class="container"><div class="card" style="padding:22px;max-width:720px;margin:0 auto;"><h1>Chưa có sản phẩm để thanh toán</h1><p class="muted">Hãy chọn ít nhất một sản phẩm trong giỏ hàng trước khi mở trang thanh toán.</p><div class="inline-actions" style="margin-top:14px;"><a class="btn btn-primary" href="cart.html">Quay lại giỏ hàng</a><a class="btn" href="products.html">Tiếp tục mua sắm</a></div></div></div></section>`;
       return;
     }
     function currentCouponState() {
       const couponInput = $('#checkoutForm [name="couponCode"]');
-      const subtotal = selectedLines().reduce((sum, line) => sum + Number(line.lineTotal || 0), 0);
+      const subtotal = selectedSubtotal();
       return evaluateCoupon(couponInput ? couponInput.value : '', subtotal);
     }
     function syncAddressFields(addressId) {
@@ -1396,7 +1412,7 @@ function bindRegisterLiveValidation(form) {
       return address;
     }
     function renderSummary() {
-      const subtotal = selectedLines().reduce((sum, line) => sum + Number(line.lineTotal || 0), 0);
+      const subtotal = selectedSubtotal();
       const coupon = currentCouponState();
       const shippingBase = baseShippingAmount();
       const shipping = coupon.valid && coupon.shippingOverride !== null ? coupon.shippingOverride : shippingBase;
@@ -1413,7 +1429,7 @@ function bindRegisterLiveValidation(form) {
       }
     }
 
-    app.innerHTML = `<section class="section"><div class="container"><div class="section-title"><div><h1>Thanh toán</h1><p class="muted">Nhập thông tin giao hàng và phương thức thanh toán để tạo đơn.</p></div><a class="btn" href="cart.html">Quay lại giỏ hàng</a></div>${mustLoginHtml}<div class="cart-layout"><div class="card cart-panel">${lines.length ? lines.map((line) => `<article class="cart-item-row"><label class="cart-item-check"><input type="checkbox" class="cart-check" data-id="${line.id}" ${line.isSelected ? 'checked' : ''} /></label><a class="cart-item-media" href="product.html?slug=${line.product.slug}"><img src="${normalizeImageUrl(line.product.coverImage, line.product.name)}" data-fallback-src="${placeholderImage(line.product.name)}" alt="${escapeHtml(line.product.name)}" /></a><div class="cart-item-info"><a class="cart-item-name" href="product.html?slug=${line.product.slug}">${escapeHtml(line.product.name)}</a><div class="muted">${line.variant ? `${escapeHtml(line.variant.weight || '-')} • ${escapeHtml(line.variant.tipSize || '-')}` : 'Bản mặc định'}</div><div class="muted">Dịch vụ: ${escapeHtml(line.services.map((s) => s.name).join(', ') || 'Không')}</div><div class="muted">Đơn giá: ${store.currency(line.unitPrice)}</div></div><div class="cart-item-qty"><span class="cart-item-label">Số lượng</span><input type="number" min="1" class="cart-qty" data-id="${line.id}" value="${line.quantity}" /></div><div class="cart-item-price"><span class="cart-item-label">Thành tiền</span><strong>${store.currency(line.lineTotal)}</strong></div><div class="cart-item-actions"><a class="btn" href="cart.html">Sửa</a></div></article>`).join('') : '<div class="muted">Giỏ hàng đang trống.</div>'}</div><div class="card checkout-panel"><div class="checkout-panel-head"><h2>Thông tin thanh toán</h2><p class="muted">Hoàn tất thông tin để tạo đơn nhanh hơn.</p></div><div class="kpi-list checkout-summary-list"><div class="list-line"><span>Tạm tính</span><strong id="cartSubtotal">${store.currency(selectedLines().reduce((sum, line) => sum + Number(line.lineTotal || 0), 0))}</strong></div><div class="list-line"><span>Giảm giá</span><strong id="cartDiscount">${store.currency(0)}</strong></div><div class="list-line"><span>Phí ship chuẩn</span><strong id="cartShipping">${store.currency(baseShippingAmount())}</strong></div><div class="list-line"><span>Tổng thanh toán</span><strong id="cartGrandTotal">${store.currency(selectedLines().reduce((sum, line) => sum + Number(line.lineTotal || 0), 0) + baseShippingAmount())}</strong></div></div><form id="checkoutForm" class="stack-form checkout-form">${savedAddresses.length ? `<div class="checkout-section"><label><span>Chọn địa chỉ đã lưu</span><select name="savedAddressId" id="savedAddressSelect"><option value="">-- Nhập địa chỉ mới --</option>${savedAddresses.map((address) => `<option value="${address.id}" ${defaultAddress && Number(defaultAddress.id) === Number(address.id) ? 'selected' : ''}>${escapeHtml(address.label || 'Địa chỉ')} • ${escapeHtml(address.recipient_name || state.me?.user?.fullName || '')} • ${escapeHtml(formatAddressText(address) || address.line1 || '')}</option>`).join('')}</select></label></div>` : ''}<div class="checkout-section"><h3>Thông tin người nhận</h3><div class="form-grid-2"><label><span>Họ tên</span><input name="fullName" minlength="2" value="${defaultAddress?.recipient_name || state.me?.user?.fullName || ''}" required /></label><label><span>Email</span><input name="email" type="email" value="${state.me?.user?.email || ''}" required /></label></div><div class="form-grid-2"><label><span>Điện thoại</span><input name="phone" inputmode="numeric" maxlength="10" pattern="0[0-9]{9}" placeholder="0901234567" value="${defaultAddress?.phone || state.me?.user?.phone || ''}" required /></label><label><span>Mã giảm giá</span><input name="couponCode" placeholder="BIDA500" /></label></div><div class="muted" id="couponStatus">Nhập mã giảm giá để hệ thống tính lại tổng đơn.</div></div><div class="checkout-section"><h3>Địa chỉ giao hàng</h3>${addressFieldsHtml('checkout', { city: defaultAddress?.city || 'TP.HCM', ward: addressAreaText(defaultAddress), line1: defaultAddress?.line1 || '' })}</div><div class="checkout-section"><h3>Thanh toán</h3><label><span>Phương thức thanh toán</span><select name="paymentMethod" required><option value="cod">COD</option><option value="vnpay">VNPay</option></select></label><label><span>Ghi chú</span><textarea name="note" placeholder="Ví dụ: thay đầu cơ trước khi giao"></textarea></label></div><div class="checkout-actions"><button class="btn btn-primary" type="submit" ${state.me ? '' : 'disabled'}>Đặt hàng</button><a class="btn" href="cart.html">Quay lại giỏ hàng</a></div></form></div></div></div></section>`;
+    app.innerHTML = `<section class="section"><div class="container"><div class="section-title"><div><h1>Thanh toán</h1><p class="muted">Nhập thông tin giao hàng và phương thức thanh toán để tạo đơn.</p></div><a class="btn" href="cart.html">Quay lại giỏ hàng</a></div>${mustLoginHtml}<div class="cart-layout"><div class="card cart-panel">${lines.length ? lines.map((line) => `<article class="cart-item-row"><label class="cart-item-check"><input type="checkbox" class="cart-check" data-id="${line.id}" ${line.isSelected ? 'checked' : ''} /></label><a class="cart-item-media" href="product.html?slug=${line.product.slug}"><img src="${normalizeImageUrl(line.product.coverImage, line.product.name)}" data-fallback-src="${placeholderImage(line.product.name)}" alt="${escapeHtml(line.product.name)}" /></a><div class="cart-item-info"><a class="cart-item-name" href="product.html?slug=${line.product.slug}">${escapeHtml(line.product.name)}</a><div class="muted">${line.variant ? `${escapeHtml(line.variant.weight || '-')} • ${escapeHtml(line.variant.tipSize || '-')}` : 'Bản mặc định'}</div><div class="muted">Dịch vụ: ${escapeHtml(line.services.map((s) => s.name).join(', ') || 'Không')}</div><div class="muted">Đơn giá: ${store.currency(line.unitPrice)}</div></div><div class="cart-item-qty"><span class="cart-item-label">Số lượng</span><input type="number" min="1" class="cart-qty" data-id="${line.id}" value="${line.quantity}" /></div><div class="cart-item-price"><span class="cart-item-label">Thành tiền</span><strong>${store.currency(line.lineTotal)}</strong></div><div class="cart-item-actions"><a class="btn" href="cart.html">Sửa</a></div></article>`).join('') : '<div class="muted">Giỏ hàng đang trống.</div>'}</div><div class="card checkout-panel"><div class="checkout-panel-head"><h2>Thông tin thanh toán</h2><p class="muted">Hoàn tất thông tin để tạo đơn nhanh hơn.</p></div><div class="kpi-list checkout-summary-list"><div class="list-line"><span>Tạm tính</span><strong id="cartSubtotal">${store.currency(selectedSubtotal())}</strong></div><div class="list-line"><span>Giảm giá</span><strong id="cartDiscount">${store.currency(0)}</strong></div><div class="list-line"><span>Phí ship chuẩn</span><strong id="cartShipping">${store.currency(baseShippingAmount())}</strong></div><div class="list-line"><span>Tổng thanh toán</span><strong id="cartGrandTotal">${store.currency(selectedSubtotal() + baseShippingAmount())}</strong></div></div><form id="checkoutForm" class="stack-form checkout-form">${savedAddresses.length ? `<div class="checkout-section"><label><span>Chọn địa chỉ đã lưu</span><select name="savedAddressId" id="savedAddressSelect"><option value="">-- Nhập địa chỉ mới --</option>${savedAddresses.map((address) => `<option value="${address.id}" ${defaultAddress && Number(defaultAddress.id) === Number(address.id) ? 'selected' : ''}>${escapeHtml(address.label || 'Địa chỉ')} • ${escapeHtml(address.recipient_name || state.me?.user?.fullName || '')} • ${escapeHtml(formatAddressText(address) || address.line1 || '')}</option>`).join('')}</select></label></div>` : ''}<div class="checkout-section"><h3>Thông tin người nhận</h3><div class="form-grid-2"><label><span>Họ tên</span><input name="fullName" minlength="2" value="${defaultAddress?.recipient_name || state.me?.user?.fullName || ''}" required /></label><label><span>Email</span><input name="email" type="email" value="${state.me?.user?.email || ''}" required /></label></div><div class="form-grid-2"><label><span>Điện thoại</span><input name="phone" inputmode="numeric" maxlength="10" pattern="0[0-9]{9}" placeholder="0901234567" value="${defaultAddress?.phone || state.me?.user?.phone || ''}" required /></label><label><span>Mã giảm giá</span><input name="couponCode" placeholder="BIDA500" /></label></div><div class="muted" id="couponStatus">Nhập mã giảm giá để hệ thống tính lại tổng đơn.</div></div><div class="checkout-section"><h3>Địa chỉ giao hàng</h3>${addressFieldsHtml('checkout', { city: defaultAddress?.city || 'TP.HCM', ward: addressAreaText(defaultAddress), line1: defaultAddress?.line1 || '' })}</div><div class="checkout-section"><h3>Thanh toán</h3><label><span>Phương thức thanh toán</span><select name="paymentMethod" required><option value="cod">COD</option><option value="vnpay">VNPay</option></select></label><label><span>Ghi chú</span><textarea name="note" placeholder="Ví dụ: thay đầu cơ trước khi giao"></textarea></label></div><div class="checkout-actions"><button class="btn btn-primary" type="submit" ${state.me ? '' : 'disabled'}>Đặt hàng</button><a class="btn" href="cart.html">Quay lại giỏ hàng</a></div></form></div></div></div></section>`;
 
     renderSummary();
     applyImageFallback(app);
@@ -1882,7 +1898,7 @@ function bindRegisterLiveValidation(form) {
     if (orderCode) {
       try {
         const order = await store.request(`/orders/${orderCode}`);
-        const paymentBanner = paymentResult === 'success' ? '<div class="alert success" style="margin-bottom:14px;">Cổng thanh toán đã trả kết quả thành công. Trạng thái cuối cùng vẫn được xác nhận bởi hệ thống.</div>' : paymentResult === 'failed' ? '<div class="alert danger" style="margin-bottom:14px;">Thanh toán chưa thành công. Bạn có thể thử lại nếu đơn hàng vẫn còn chờ thanh toán.</div>' : '';
+        const paymentBanner = paymentResult === 'success' ? '<div class="alert success" style="margin-bottom:14px;">Thanh toán thành công.</div>' : paymentResult === 'failed' ? '<div class="alert danger" style="margin-bottom:14px;">Thanh toán chưa thành công. Bạn có thể thử lại nếu đơn hàng vẫn còn chờ thanh toán.</div>' : '';
         const retryHtml = canRetryOnlinePayment(order) ? `<div class="inline-actions" style="margin-top:14px;"><button class="btn btn-primary" type="button" id="retryPaymentBtn" data-order-code="${order.order_code}">Thanh toán lại VNPAY</button></div>` : '';
         orderBlock = `<div class="card" style="padding:22px;margin-bottom:18px;">${paymentBanner}<h2>Đơn hàng ${order.order_code}</h2><div class="kpi-list"><div class="list-line"><span>Khách hàng</span><strong>${order.customer_name}</strong></div><div class="list-line"><span>Trạng thái đơn</span><strong>${order.order_status}</strong></div><div class="list-line"><span>Thanh toán</span><strong>${order.payment_status}</strong></div><div class="list-line"><span>Tổng tiền</span><strong>${store.currency(order.grand_total)}</strong></div></div>${bankTransferHtml(order)}${retryHtml}</div>`;
       } catch {}
@@ -2005,4 +2021,3 @@ function bindRegisterLiveValidation(form) {
   startAuto();
   }
 })();
-
